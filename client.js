@@ -383,7 +383,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.4.0";
+var CLIENT_VERSION = "1.5.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -391,6 +391,33 @@ function matchModeLabel(mode) {
   if (mode === "fuzzy") return "近似容错";
   return "宽松匹配";
 }
+
+/**
+ * 预设的"底子"：每套预设都以它为基础再覆盖，因此套用结果**完全可预期**
+ * （不会因为你之前手调过底色/边框而留下残留值）。只含外观字段，永远不动文案与图片。
+ */
+var PRESET_BASE = {
+  imageHeight: 22,
+  fontSize: 14,
+  fontWeight: 600,
+  color: "",
+  colorDark: "",
+  animation: "none",
+  animSpeed: 1,
+  shape: "none",
+  radius: 12,
+  padY: 5,
+  fill: "none",
+  bgColor: "",
+  bgColorDark: "",
+  borderWidth: 0,
+  borderColor: "",
+  borderColorDark: "",
+  shadow: "none",
+  letterSpacing: 0,
+  caps: "none",
+  italic: false
+};
 
 /**
  * 样式预设：只包含"外观"字段，永远不动文案与图片。
@@ -420,6 +447,46 @@ var STYLE_PRESETS = [
   {
     id: "typewriter", name: "复古打字", dot: "#8b6f47",
     style: { color: "#7a5c3a", colorDark: "#d8b98c", fontWeight: 500, animation: "none", shape: "underline", radius: 0, padY: 2, fill: "none", bgColor: "", bgColorDark: "", borderWidth: 0, shadow: "none", letterSpacing: 1, caps: "none", italic: false }
+  },
+  {
+    id: "ocean", name: "海盐蓝", dot: "#2f6fed",
+    style: { color: "#2f6fed", colorDark: "#7aa2ff", fontWeight: 600, animation: "slideUp", shape: "pill", radius: 999, padY: 5, fill: "faint", shadow: "none" }
+  },
+  {
+    id: "forest", name: "森林绿", dot: "#1a9e6b",
+    style: { color: "#1a9e6b", colorDark: "#4ade80", fontWeight: 600, animation: "fade", shape: "soft", radius: 10, padY: 6, fill: "faint", borderWidth: 1, borderColor: "#bfe6d5", borderColorDark: "#2d5c48", shadow: "soft" }
+  },
+  {
+    id: "violet", name: "紫罗兰", dot: "#7c3aed",
+    style: { color: "#6d28d9", colorDark: "#c4b5fd", fontWeight: 700, animation: "glow", shape: "tag", radius: 6, padY: 5, fill: "solid", bgColor: "#f3eeff", bgColorDark: "#2a1f45", shadow: "glow" }
+  },
+  {
+    id: "outline", name: "描边风", dot: "#9aa4b2",
+    style: { color: "", colorDark: "", fontWeight: 500, animation: "none", shape: "rect", radius: 8, padY: 5, fill: "none", borderWidth: 1, borderColor: "#9aa4b2", borderColorDark: "#55606f", shadow: "none" }
+  },
+  {
+    id: "marker", name: "高亮笔", dot: "#f2c94c",
+    style: { color: "#7a5c00", colorDark: "#ffe066", fontWeight: 600, animation: "none", shape: "highlight", radius: 3, padY: 3, fill: "solid", bgColor: "#fff3bf", bgColorDark: "#4a3b00", shadow: "none" }
+  },
+  {
+    id: "quote", name: "引用块", dot: "#64748b",
+    style: { color: "#4b5563", colorDark: "#cbd5e1", fontWeight: 400, animation: "none", shape: "blockquote", radius: 4, padY: 6, fill: "none", borderWidth: 0, shadow: "none" }
+  },
+  {
+    id: "underline", name: "细下划线", dot: "#334155",
+    style: { color: "", colorDark: "", fontWeight: 600, animation: "none", shape: "underline", radius: 0, padY: 2, fill: "none", borderWidth: 0, shadow: "none" }
+  },
+  {
+    id: "matrix", name: "墨绿终端", dot: "#1f7a4d",
+    style: { color: "#1f7a4d", colorDark: "#52ff9b", fontWeight: 500, animation: "blink", shape: "none", radius: 0, padY: 2, fill: "none", letterSpacing: 2, caps: "none" }
+  },
+  {
+    id: "cyberpink", name: "霓虹粉", dot: "#d6336c",
+    style: { color: "#d6336c", colorDark: "#ff6fae", fontWeight: 700, animation: "neon", shape: "tag", radius: 4, padY: 5, fill: "faint", borderWidth: 1, borderColor: "#ff9ec4", borderColorDark: "#ff6fae", shadow: "glow" }
+  },
+  {
+    id: "paper", name: "纸质标签", dot: "#b08d57",
+    style: { color: "#6b4f2a", colorDark: "#d9c39a", fontWeight: 600, animation: "none", shape: "card", radius: 10, padY: 6, fill: "solid", bgColor: "#f7f1e3", bgColorDark: "#3a3325", borderWidth: 1, borderColor: "#e0d3b8", borderColorDark: "#6b5c3f", shadow: "soft" }
   }
 ];
 
@@ -1240,15 +1307,18 @@ function Editor() {
   var setPresetBoth = presetBothPair[1];
 
   /**
-   * 套用一套外观预设：只覆盖预设里列出的"外观"字段，文案与图片原样保留。
+   * 套用一套外观预设：以 PRESET_BASE 打底再叠加这套预设，**文案与图片原样保留**。
+   * 之所以要打底：预设只写它关心的字段，不打底的话你之前手调过的底色/边框会残留，
+   * 同一套预设在不同行上长得不一样。
    * @param {Object} preset STYLE_PRESETS 里的一项。
    */
   function applyPreset(preset) {
     var targets = presetBoth ? ["greeting", "signOff"] : [tab];
     var patch = {};
+    var style = Object.assign({}, PRESET_BASE, preset.style);
     for (var i = 0; i < targets.length; i += 1) {
       var key = targets[i];
-      patch[key] = Object.assign({}, draft[key], preset.style);
+      patch[key] = Object.assign({}, draft[key], style);
     }
     dirtyRef.current = true;
     setTouched(true);
@@ -1735,7 +1805,7 @@ function Editor() {
     ),
     section("外观样式（形状 / 填充 / 边框 / 阴影，只影响页面显示）", "deco",
       React.createElement("div", { className: "gs-presets", key: "presets" },
-        React.createElement("span", { className: "gs-label" }, "一键外观"),
+        React.createElement("span", { className: "gs-label" }, "一键外观（" + STYLE_PRESETS.length + " 套）"),
         STYLE_PRESETS.map(function (preset) {
           return React.createElement("button", {
             key: preset.id, type: "button", className: "gs-preset",
@@ -1750,7 +1820,12 @@ function Editor() {
           type: "button", className: presetBoth ? "gs-tab gs-tab-on" : "gs-tab",
           title: "开：一次改两行；关：只改当前标签页",
           onClick: function () { setPresetBoth(!presetBoth); }
-        }, presetBoth ? "两行都套" : "只套本页")
+        }, presetBoth ? "两行都套" : "只套本页"),
+        React.createElement("button", {
+          type: "button", className: "gs-btn",
+          title: "把当前行的外观恢复成默认（文案与图片不动）",
+          onClick: function () { applyPreset({ name: "默认外观", style: {} }); }
+        }, "恢复默认外观")
       ),
       grid("deco-grid", [
         selectCell("形状", SHAPES, line.shape, function (value) {
