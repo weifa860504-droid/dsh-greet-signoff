@@ -1,0 +1,63 @@
+{
+  "name": "dsh-greet-signoff",
+  "version": "1.1.0",
+  "description": "开场语与收尾语：每次回复固定开场/收尾，并在上下文接近上限时提示换新会话。",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs"
+  ],
+  "scripts": {
+    "verify": "node scripts/verify-manifest.mjs"
+  },
+  "license": "MIT",
+  "author": "weifa860504-droid",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weifa860504-droid/dsh-greet-signoff.git"
+  },
+  "homepage": "https://github.com/weifa860504-droid/dsh-greet-signoff#readme",
+  "bugs": {
+    "url": "https://github.com/weifa860504-droid/dsh-greet-signoff/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis-plugin",
+    "chat",
+    "status-bar",
+    "ui"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "slots"
+      ]
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.1.2-rc.1": "compatible",
+        "0.1.5-rc.1": "compatible"
+      }
+    }
+  }
+}

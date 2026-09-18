@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 语法检查
+        run: |
+          node --check index.mjs
+          node --check client.js
+          node --check scripts/verify-manifest.mjs
+
+      - name: 发布自检（元数据 / 发布物清单 / 占位符 / CHANGELOG）
+        run: node scripts/verify-manifest.mjs
+
+      - name: npm 打包清单
+        run: |
+          npm pack --dry-run

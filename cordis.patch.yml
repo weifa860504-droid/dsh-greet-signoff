@@ -1,0 +1,8 @@
+# Bundle patch layer: 本包作为一行插入宿主组合。
+#
+# name 必须与包名（package.json 的 name）和目录名完全一致：
+# Web 端模块表按「行名 → 解析出的模块 → 向上找 name 相同的 package.json」定位包，
+# 三者不一致时这一行会被整条跳过，浏览器半永远不会被加载。
+- insert:
+    - id: greet-signoff
+      name: 'dsh-greet-signoff'
