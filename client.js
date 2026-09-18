@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.6.2";
+var CLIENT_VERSION = "1.6.3";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -2093,7 +2093,8 @@ function Editor() {
       React.createElement("div", null, "上次扫描：命中 " + stylerStats.matched + " 行 / 重扫 " + stylerStats.scanned + " 块 / 共 " + stylerStats.blocks + " 块 · 跳过非助手 " + stylerStats.skippedNonAssistant + " 块"),
       React.createElement("div", null, "匹配模式：" + matchModeLabel(state.config.matchMode) + " · 贴样式范围：" + (state.config.onlyAssistant === false ? "整段对话" : "只贴我的回复") + " · 旧文案 " + (state.config.legacyLines || []).length + " 条"),
       React.createElement("div", null, "当前标签页命中：" + (typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0) + " 行（整页）"),
-      React.createElement("div", null, "宿主导航条读数：" + (typeof document !== "undefined" && document.querySelector(".gs-dock-bar") ? (document.querySelector(".gs-dock-bar").getAttribute("aria-valuenow") || "未知") : "未挂载"))
+      React.createElement("div", null, "宿主导航条读数：" + (typeof document !== "undefined" && document.querySelector(".gs-dock-bar") ? (document.querySelector(".gs-dock-bar").getAttribute("aria-valuenow") || "未知") : "未挂载")),
+      React.createElement("div", null, "连接自愈：检查 " + healStats.checks + " 次 · 看到异常 " + healStats.stuck + " 次 · 已自动重载 " + healStats.reloads + " 次（" + (healStats.lastWhy || "暂无动作") + "）")
     ),
     { defaultOpen: false, summary: "v" + CLIENT_VERSION }
   ));
@@ -3157,6 +3158,139 @@ function installChatStyler(ctx) {
   }, "greet-signoff:chat-style");
 }
 
+/* ─── 连接自愈：DSH 重启后，别让页面永远停在"自动重连中" ─────────────────── */
+
+/**
+ * DSH 自带文案里属于"连不上"的那几种；纯函数，便于单测。
+ * - 连接异常 / 自动重连中（后面 1-3 个点每 500ms 前进）/ 立即重连（悬浮态）
+ * - "连接成功"是恢复提示，**不算**卡住。
+ * @param text - 元素文本（可能带省略号或零宽字符）。
+ * @returns 是否属于连接异常提示。
+ */
+var RECONNECT_STUCK_RE = /^(自动重连中|连接异常|立即重连|重连失败|Reconnecting|Disconnected|Reconnect now)\s*[.。·…]*$/;
+
+function isReconnectStuckText(text) {
+  if (typeof text !== "string") return false;
+  var clean = text.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, "").replace(/\s+/g, " ").trim();
+  return RECONNECT_STUCK_RE.test(clean);
+}
+
+/**
+ * 页面上是不是正显示"连接异常"。
+ * 只认叶子（childElementCount ≤ 1）且整段文本完全匹配，避免误伤正文里提到"重连"的文字。
+ * @returns 是否可见连接异常提示。
+ */
+function reconnectStuckVisible() {
+  if (typeof document === "undefined" || document.body === null) return false;
+  var nodes = document.querySelectorAll("span,div,p,button,li");
+  for (var i = 0; i < nodes.length; i += 1) {
+    if (nodes[i].childElementCount > 1) continue;
+    if (isReconnectStuckText(nodes[i].textContent)) return true;
+  }
+  return false;
+}
+
+/**
+ * 输入框里有没有还没发出去的草稿。
+ * 有草稿就不自动重载 —— 宁可多等一会儿，也不能把用户正在写的东西弄丢。
+ * @returns 草稿是否存在。
+ */
+function composerHasDraft() {
+  if (typeof document === "undefined") return false;
+  var el = document.querySelector('[data-dsh-part="composer-input"]');
+  if (el === null) return false;
+  if (typeof el.value === "string") return el.value.trim() !== "";
+  return (el.textContent || "").trim() !== "";
+}
+
+/** 自愈统计（设置页"诊断"区读取）。 */
+var healStats = { checks: 0, stuck: 0, reloads: 0, lastAt: 0, lastWhy: "" };
+
+var HEAL_KEY = "dsh-greet-signoff:selfheal";
+var HEAL_TICK_MS = 5000;
+var HEAL_STUCK_TICKS = 6; // 连续 30 秒都连不上才动手
+var HEAL_MIN_GAP_MS = 60000;
+var HEAL_MAX_PER_HOUR = 3;
+
+/** 读本标签页这一小时里已经自动重载了几次（用 sessionStorage 跨重载累计，防死循环）。 */
+function healBudget() {
+  var empty = { count: 0, first: 0 };
+  try {
+    var raw = window.sessionStorage.getItem(HEAL_KEY);
+    if (raw === null) return empty;
+    var parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object") return empty;
+    var count = typeof parsed.count === "number" ? parsed.count : 0;
+    var first = typeof parsed.first === "number" ? parsed.first : 0;
+    if (first === 0 || Date.now() - first > 3600000) return empty;
+    return { count: count, first: first };
+  } catch (error) {
+    return empty;
+  }
+}
+
+/** 记一次自动重载。 */
+function healRecord() {
+  var budget = healBudget();
+  try {
+    window.sessionStorage.setItem(HEAL_KEY, JSON.stringify({ count: budget.count + 1, first: budget.first === 0 ? Date.now() : budget.first }));
+  } catch (error) { /* 隐私模式等场景写不了，照样重载 */ }
+}
+
+/**
+ * 连接看门狗：DSH 每次重启都会换访问令牌，已经打开的页面手里的旧握手就永远续不上了，
+ * 界面会一直停在"自动重连中"（官方文案本身建议手动重开/刷新）。
+ * 这里做成自动的：连续 30 秒看到连接异常、且服务端本身可达（`/` 还是 200）、且输入框没有草稿时，
+ * 自动重载一次页面 —— 重载会用 cookie 重新握手，页面就自己活了。
+ * 边界：服务真挂了（探活失败）不重载，避免刷屏；本标签页每小时最多 3 次，两次之间至少隔 60 秒。
+ * @param ctx - 本行的插件上下文（定时器挂在它上面，插件停用即自动清掉）。
+ */
+function installConnectionWatchdog(ctx) {
+  if (typeof window === "undefined" || typeof document === "undefined" || typeof window.fetch !== "function") return;
+  var stuckTicks = 0;
+  var reloading = false;
+  var lastReloadAt = 0;
+
+  function canReload() {
+    if (reloading) return false;
+    if (lastReloadAt !== 0 && Date.now() - lastReloadAt < HEAL_MIN_GAP_MS) return false;
+    return healBudget().count < HEAL_MAX_PER_HOUR;
+  }
+
+  function reloadNow() {
+    reloading = true;
+    lastReloadAt = Date.now();
+    healRecord();
+    healStats.reloads += 1;
+    healStats.lastAt = Date.now();
+    healStats.lastWhy = "服务可达但界面停在重连，已自动重载";
+    // 等一拍再重载，让这一轮渲染和统计先落定。
+    window.setTimeout(function () { window.location.reload(); }, 400);
+  }
+
+  function tick() {
+    healStats.checks += 1;
+    if (!reconnectStuckVisible()) { stuckTicks = 0; return; }
+    stuckTicks += 1;
+    healStats.stuck += 1;
+    if (stuckTicks < HEAL_STUCK_TICKS || !canReload()) return;
+    if (composerHasDraft()) { healStats.lastWhy = "输入框里有草稿，暂不重载"; return; }
+    window.fetch(window.location.origin + "/", { cache: "no-store", credentials: "same-origin" })
+      .then(function (response) {
+        var status = response === undefined ? 0 : response.status;
+        if (status === 200) { stuckTicks = 0; reloadNow(); return; }
+        // 401/403：页面自己的登录态已经失效，重载只会换一张错误页，不动手更好。
+        healStats.lastWhy = "页面登录态已失效（HTTP " + status + "），不自动重载";
+      })
+      .catch(function () { healStats.lastWhy = "服务暂时不可达，等它起来"; });
+  }
+
+  ctx.effect(function () {
+    var timer = window.setInterval(tick, HEAL_TICK_MS);
+    return function () { window.clearInterval(timer); };
+  }, "greet-signoff:connection-watchdog");
+}
+
 /* ─── 安装 ───────────────────────────────────────────────────────────── */
 
 /**
@@ -3186,6 +3320,9 @@ function apply(ctx) {
     document.head.appendChild(tag);
     return function () { tag.remove(); };
   }, "greet-signoff:css");
+
+  // 连接自愈要在 slots 检查之前装：即使 slots 服务没就绪，页面卡在"自动重连中"时也该能自救。
+  installConnectionWatchdog(ctx);
 
   var slots = ctx.get("slots");
   if (slots === undefined) {
@@ -3246,6 +3383,7 @@ module.exports = {
     lineCssDecls: lineCssDecls,
     matchModeLabel: matchModeLabel,
     isPerCharAnimation: isPerCharAnimation,
+    isReconnectStuckText: isReconnectStuckText,
     splitGraphemes: splitGraphemes,
     renderLineText: renderLineText
   }

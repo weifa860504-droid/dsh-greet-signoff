@@ -228,3 +228,21 @@ test('renderLineText：逐字动效返回多个 span，其余返回纯文本', (
   assert.equal(chars[1].props.style['--gs-i'], '1')
   assert.equal(chars[1].props.children, '哥')
 })
+
+test('isReconnectStuckText：只认连接异常提示，不误伤正文', () => {
+  // DSH 自带的几种"连不上"文案（含 500ms 前进的省略号）
+  assert.equal(t.isReconnectStuckText('自动重连中'), true)
+  assert.equal(t.isReconnectStuckText('自动重连中...'), true)
+  assert.equal(t.isReconnectStuckText('自动重连中…'), true)
+  assert.equal(t.isReconnectStuckText('连接异常'), true)
+  assert.equal(t.isReconnectStuckText('立即重连'), true)
+  assert.equal(t.isReconnectStuckText('Reconnecting'), true)
+  // 零宽字符与多余空白不影响判定
+  assert.equal(t.isReconnectStuckText('  连接异常 \u200B'), true)
+  // 恢复提示不算卡住
+  assert.equal(t.isReconnectStuckText('连接成功'), false)
+  // 正文里提到"重连"不算
+  assert.equal(t.isReconnectStuckText('DSH 重启后页面会显示自动重连中，按 F5 即可'), false)
+  assert.equal(t.isReconnectStuckText(''), false)
+  assert.equal(t.isReconnectStuckText(undefined), false)
+})
