@@ -27,7 +27,7 @@ jobs:
           node --check scripts/verify-manifest.mjs
 
       - name: 单元测试（浏览器半的纯函数，用最小 DOM 桩加载 client.js）
-        run: node --test test/
+        run: node --test test/client-pure.test.mjs
 
       - name: 发布自检（元数据 / 发布物清单 / 占位符 / CHANGELOG）
         run: node scripts/verify-manifest.mjs

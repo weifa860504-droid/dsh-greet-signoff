@@ -8,10 +8,13 @@
 ```sh
 node --check index.mjs
 node --check client.js
-node --test test/                      # 13 个纯函数单测（用最小 DOM 桩加载 client.js）
-node scripts/verify-manifest.mjs       # 元数据 / 发布物清单 / 占位符 / CHANGELOG 版本一致性
-npm pack --dry-run                     # 看一眼真正会被打包的文件
+node --test test/client-pure.test.mjs   # 16 个纯函数单测（用最小 DOM 桩加载 client.js）
+node scripts/verify-manifest.mjs        # 元数据 / 发布物清单 / 占位符 / CHANGELOG 版本一致性
+npm pack --dry-run                      # 看一眼真正会被打包的文件
 ```
+
+> 单测要写**具体文件**而不是目录：`node --test test/` 在 Node 22 上会被当成"要运行 test 这个模块"而报
+> `Cannot find module ...\test`（Node 26 才支持传目录）。写文件路径则 22/26 都能跑。
 
 再确认三件事：
 
@@ -48,6 +51,24 @@ npm view dsh-greet-signoff version     # 回读确认
 
 发布后用户可以直接 `dsh plugin --profile web add dsh-greet-signoff`（比 `github:` 安装更标准）。
 若开了 2FA，`npm publish` 会要求一次性验证码。
+
+## 改完之后，改动怎么才能生效（本机实测，别踩坑）
+
+| 改了哪一半 | 生效方式 | 说明 |
+| --- | --- | --- |
+| 只改 `client.js`（浏览器半） | **刷新页面即可** | 客户端包是**每请求现读源码**合成的（实测：服务进程没重启，页面刷新后拿到的就是新版本）。**不要为了这个去重启** |
+| 改了 `index.mjs`（宿主半） | **必须重启 `dsh web`** | 实测：profile patch 是 live 的，把插件行 `disabled: true` 再放开确实会重新挂载（启动日志会再打一条 `mounted`），但 **Node 的 ESM 模块缓存会让它仍然用旧代码**，所以"热重载"只对"想重新挂载"有用，**不能用来上线新代码** |
+
+⚠️ **重启的副作用**：`dsh web` 每次启动都会重新随机生成访问令牌。浏览器里那个还带着**旧令牌**的窗口会表现为
+「页面外壳都在、但发消息没有任何反应」（所有请求 401）。这不是插件坏了。所以：
+
+- 重启之后，**必须用一个带当前令牌的地址打开页面**（本机 `start-dsh-web.ps1` 末尾已经改成调用
+  `open-dsh-app.vbs`，它会读 `run\last-url.txt` 并用当前令牌开一个"应用窗口"；桌面快捷方式也指向同一个 vbs，
+  所以点一下桌面图标永远能开出一个能用的窗口）；
+- 排障时先看 `run\last-url.txt` 的令牌是不是当前进程的（服务启动日志里也打印了同样的地址）。
+
+> 血泪教训（2026-09-18）：一晚上因为"重启 → 旧窗口 401 → 以为坏了 → 继续重启"连踩两次，
+> 一共被重启了 7 次。**能刷新就别重启；非重启不可时，先准备好"用当前令牌开窗口"的那一步。**
 
 ## 1. 本机安装冒烟测试 🔴
 

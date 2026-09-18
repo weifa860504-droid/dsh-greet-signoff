@@ -1,6 +1,6 @@
 {
   "name": "dsh-greet-signoff",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "开场语与收尾语：每次回复固定开场/收尾，并在上下文接近上限时提示换新会话。",
   "type": "module",
   "main": "./index.mjs",
@@ -20,7 +20,7 @@
     "docs"
   ],
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test test/client-pure.test.mjs",
     "verify": "node scripts/verify-manifest.mjs"
   },
   "license": "MIT",
