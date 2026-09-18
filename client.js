@@ -383,7 +383,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.3.1";
+var CLIENT_VERSION = "1.4.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -463,7 +463,18 @@ var DEFAULTS = {
 
 function css() {
   return [
-    ".gs-panel{box-sizing:border-box;width:100%;padding:0 0 10px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
+    ".gs-panel{box-sizing:border-box;width:100%;padding:0 0 58px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
+    /* ── 新版布局：吸顶头部（标签页 + 实时预览）+ 可折叠分区卡片 ── */
+    // 预览跟着滚动吸在顶上，改下面的参数时不用滚回去看效果。
+    ".gs-stickyhead{position:sticky;top:-2px;z-index:6;padding:10px 0 8px;background:var(--dsw-alias-bg-base);box-shadow:0 6px 10px -8px rgba(0,0,0,.28)}",
+    ".gs-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);margin-top:10px;overflow:hidden}",
+    ".gs-card>.gs-fold{padding:10px 12px}",
+    ".gs-card>.gs-fold-open{border-bottom:1px solid var(--dsw-alias-border-l2)}",
+    ".gs-fold-body{padding:4px 12px 12px}",
+    // 顶部预览卡片：虚线框、更紧凑；非当前编辑的那行淡一些
+    ".gs-preview{margin-top:8px;padding:8px 10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);flex-direction:column;gap:4px;display:flex}",
+    ".gs-preview-line{opacity:.55;transition:opacity .15s ease}",
+    ".gs-preview-line.gs-preview-on{opacity:1}",
     ".gs-field{flex-direction:column;gap:4px;margin-top:10px;display:flex}",
     ".gs-label{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
     ".gs-hint{color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}",
@@ -505,13 +516,11 @@ function css() {
     ".gs-scheme:hover{background:var(--dsw-alias-interactive-bg-hover)}",
     ".gs-scheme-on{border-color:var(--dsw-alias-label-primary)}",
     ".gs-scheme-bar{width:34px;height:8px;border-radius:999px;display:inline-block}",
-    ".gs-preview{margin-top:10px;padding:10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);flex-direction:column;gap:6px;display:flex}",
-    ".gs-sec{margin-top:14px}",
     ".gs-sec-title{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin-bottom:6px}",
     ".gs-row2{align-items:center;gap:8px;display:flex;margin-top:8px;min-width:0;flex-wrap:wrap}",
     ".gs-row2>.gs-label{flex:none;width:52px}",
     /* 两列自适应网格：窄栏自动落成单列，宽栏并排，纵向省一半高度 */
-    ".gs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:8px 12px;margin-top:8px;align-items:center}",
+    ".gs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:8px 12px;margin-top:4px;align-items:center}",
     ".gs-cell{display:flex;align-items:center;gap:6px;min-width:0}",
     ".gs-cell-wide{grid-column:1/-1}",
     ".gs-cell>.gs-label{flex:none;width:52px;color:var(--dsw-alias-label-secondary);font-size:12px}",
@@ -524,7 +533,7 @@ function css() {
     ".gs-num{width:66px;flex:none;text-align:center;padding:4px 6px}",
     ".gs-select{height:30px;padding:4px 8px;font-size:13px}",
     ".gs-file{display:none}",
-    ".gs-actions{position:sticky;bottom:0;z-index:2;margin-top:14px;padding:10px 0 2px;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-1);border-top:.5px solid var(--dsw-alias-border-l2);display:flex;flex-wrap:wrap}",
+    ".gs-actions{position:sticky;bottom:0;z-index:7;margin-top:10px;padding:10px 0 6px;gap:8px;align-items:center;background:var(--dsw-alias-bg-base);border-top:1px solid var(--dsw-alias-border-l2);display:flex;flex-wrap:wrap}",
     ".gs-thumbwrap{align-items:center;gap:6px;display:inline-flex}",
     ".gs-dock{box-sizing:border-box;width:100%;margin:0 0 6px;padding:5px 0 0;position:relative;background:none;border:0;box-shadow:none}",
     // 反制宿主主题：皮肤主题会给输入区附属卡片（[data-slot="conversation.input.dock"] > *）强制上白底/圆角/阴影，
@@ -1058,6 +1067,32 @@ function validate(draft) {
   return null;
 }
 
+/** 分区的默认展开状态：高频的三个打开，低频的收起（面板不至于太长）。 */
+var FOLD_DEFAULTS = { text: true, font: true, deco: true, alert: false, legacy: false, bar: false, diag: false };
+var FOLD_KEY = "gs.signoff.folds";
+
+/** 读取分区展开状态（浏览器本地；读不到就用默认）。 */
+function readFoldState() {
+  var out = Object.assign({}, FOLD_DEFAULTS);
+  try {
+    var raw = window.localStorage.getItem(FOLD_KEY);
+    if (typeof raw === "string" && raw.length > 0) {
+      var saved = JSON.parse(raw);
+      if (saved !== null && typeof saved === "object") {
+        Object.keys(FOLD_DEFAULTS).forEach(function (key) {
+          if (typeof saved[key] === "boolean") out[key] = saved[key];
+        });
+      }
+    }
+  } catch (error) { /* 隐私模式等：用默认值 */ }
+  return out;
+}
+
+/** 写入分区展开状态。 */
+function writeFoldState(state) {
+  try { window.localStorage.setItem(FOLD_KEY, JSON.stringify(state)); } catch (error) { /* 忽略写入失败 */ }
+}
+
 /* ─── 行渲染（编辑器预览与输入框上方卡片共用） ────────────────────────── */
 
 /** 当前是不是深色主题（宿主用 body[data-ds-dark-theme] 标记）。 */
@@ -1185,12 +1220,11 @@ function Editor() {
   var dirtyRef = React.useRef(false);
   // 每个编辑器实例一个唯一的 file input id（label 点击要指向它）
   var fileIdRef = React.useRef("gs-file-" + Math.random().toString(36).slice(2, 8));
-  // "上下文提醒"是低频项：默认折叠，展开状态存在浏览器本地（不占配置、不用重启）
-  var advancedPair = React.useState(function () {
-    try { return window.localStorage.getItem("gs.signoff.advanced") === "1"; } catch (error) { return false; }
-  });
-  var advanced = advancedPair[0];
-  var setAdvanced = advancedPair[1];
+  // 各分区的展开状态：存在浏览器本地（不占配置、不用重启）。
+  // 默认只展开三个高频分区，其余收起，面板不再是一条需要来回滚的长龙。
+  var foldsPair = React.useState(readFoldState);
+  var folds = foldsPair[0];
+  var setFolds = foldsPair[1];
   var emojiPair = React.useState(false);
   var emojiOpen = emojiPair[0];
   var setEmojiOpen = emojiPair[1];
@@ -1204,10 +1238,6 @@ function Editor() {
   var presetBothPair = React.useState(true);
   var presetBoth = presetBothPair[0];
   var setPresetBoth = presetBothPair[1];
-  // 旧的 deep 链接/折叠状态之外，诊断区也默认折叠
-  var diagPair = React.useState(false);
-  var diagOpen = diagPair[0];
-  var setDiagOpen = diagPair[1];
 
   /**
    * 套用一套外观预设：只覆盖预设里列出的"外观"字段，文案与图片原样保留。
@@ -1272,10 +1302,15 @@ function Editor() {
     reader.readAsText(file);
   }
 
-  function toggleAdvanced() {
-    var next = !advanced;
-    setAdvanced(next);
-    try { window.localStorage.setItem("gs.signoff.advanced", next ? "1" : "0"); } catch (error) { /* 忽略隐私模式等写入失败 */ }
+  /**
+   * 展开/收起一个分区（状态记在浏览器本地）。
+   * @param {string} key 分区标识。
+   */
+  function toggleFold(key) {
+    var next = Object.assign({}, folds);
+    next[key] = !(folds[key] === true);
+    setFolds(next);
+    writeFoldState(next);
   }
 
   /**
@@ -1440,10 +1475,30 @@ function Editor() {
     );
   }
 
-  function section(title, key, children) {
-    return React.createElement("div", { className: "gs-sec", key: key },
-      React.createElement("div", { className: "gs-sec-title" }, title),
-      children
+  /**
+   * 一个可折叠的分区卡片：标题行常驻，内容按需展开。
+   * 高频分区默认展开（文本/字体/外观），低频分区默认收起（上下文提醒/旧文案/进度条/诊断），
+   * 这样面板不再是一条需要来回滚的长龙。展开状态记在浏览器本地。
+   * @param {string} title 标题。
+   * @param {string} key 分区标识（同时是折叠状态与 React key）。
+   * @param {*} children 内容。
+   * @param {Object} [options] { summary 右侧摘要, defaultOpen 是否默认展开 }
+   * @returns {Object} React 元素。
+   */
+  function section(title, key, children, options) {
+    var opts = options === undefined ? {} : options;
+    var open = folds[key] !== undefined ? folds[key] === true : opts.defaultOpen !== false;
+    return React.createElement("div", { className: "gs-card", key: key },
+      React.createElement("div", {
+        className: open ? "gs-fold gs-fold-open" : "gs-fold", role: "button", tabIndex: 0,
+        onClick: function () { toggleFold(key); },
+        onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") toggleFold(key); }
+      },
+        React.createElement("span", { className: "gs-fold-caret" }, open ? "▼" : "▶"),
+        React.createElement("span", { className: "gs-sec-title", style: { marginBottom: 0 } }, title),
+        opts.summary === undefined ? null : React.createElement("span", { className: "gs-fold-sum" }, opts.summary)
+      ),
+      open ? React.createElement("div", { className: "gs-fold-body" }, children) : null
     );
   }
 
@@ -1484,21 +1539,28 @@ function Editor() {
   var fileId = fileIdRef.current;
 
   var body = [
-    React.createElement("div", { className: "gs-tabs", key: "tabs" },
-      React.createElement("button", {
-        type: "button", className: tab === "greeting" ? "gs-tab gs-tab-on" : "gs-tab",
-        onClick: function () { setTab("greeting"); }
-      }, "开场语"),
-      React.createElement("button", {
-        type: "button", className: tab === "signOff" ? "gs-tab gs-tab-on" : "gs-tab",
-        onClick: function () { setTab("signOff"); }
-      }, "结束语"),
-      React.createElement("span", { className: "gs-saved" },
-        busy ? "正在保存…" : saved ? "已保存 · 下一次回复即生效" : touched ? "有未保存的改动" : "")
-    ),
-    React.createElement("div", { className: "gs-preview", key: "preview" },
-      React.createElement("div", { className: "gs-label" }, "实时预览（与输入框上方显示一致）"),
-      lineRender(line, tab === "greeting" ? "开场" : "收尾", "preview")
+    // 顶部：标签页 + 状态 + 实时预览，一起吸顶。这样往下调参数时预览始终可见，
+    // 不用"滚下去改完再滚回来看"。
+    React.createElement("div", { className: "gs-stickyhead", key: "head" },
+      React.createElement("div", { className: "gs-tabs", key: "tabs" },
+        React.createElement("button", {
+          type: "button", className: tab === "greeting" ? "gs-tab gs-tab-on" : "gs-tab",
+          onClick: function () { setTab("greeting"); }
+        }, "开场语"),
+        React.createElement("button", {
+          type: "button", className: tab === "signOff" ? "gs-tab gs-tab-on" : "gs-tab",
+          onClick: function () { setTab("signOff"); }
+        }, "结束语"),
+        React.createElement("span", { className: "gs-saved" },
+          busy ? "正在保存…" : saved ? "已保存 · 下一次回复即生效" : touched ? "有未保存的改动" : "")
+      ),
+      React.createElement("div", { className: "gs-preview", key: "preview" },
+        React.createElement("div", { className: "gs-label" }, "实时预览（两行都显示，正在编辑的那行高亮）"),
+        React.createElement("div", { className: tab === "greeting" ? "gs-preview-line gs-preview-on" : "gs-preview-line" },
+          lineRender(draft.greeting, "开场", "preview-greeting")),
+        React.createElement("div", { className: tab === "signOff" ? "gs-preview-line gs-preview-on" : "gs-preview-line" },
+          lineRender(draft.signOff, "收尾", "preview-signoff"))
+      )
     ),
     section("文本（会写进我回复的正文，可含表情）", "text",
       React.createElement("div", null,
@@ -1585,12 +1647,10 @@ function Editor() {
         ),
         React.createElement("div", { className: "gs-hint", key: "resolved" },
           "现在会解析成：" + (resolveTemplate(line.text, new Date()).replace(/\n/g, " ⏎ ") || "（空）")),
-        React.createElement("div", { className: "gs-hint" },
-          "常用表情在上面；点「全部表情」展开全部可显示表情（" + emojiTotalLabel() + "），可用中文名搜索（如「皇冠」「鞭炮」「钱包」）。也可以直接用系统表情面板：Win + ."),
-        EMOJI_SCAN.blank > 0
-          ? React.createElement("div", { className: "gs-hint" },
-              "已自动隐藏 " + EMOJI_SCAN.blank + " 个本机字体没有字形、点开会显示成空格子的表情（Unicode 新码位，等系统字体更新后会自动出现）。")
-          : null
+        React.createElement("div", {
+          className: "gs-hint",
+          title: "点「全部表情」展开全部可显示表情（" + emojiTotalLabel() + "），可用中文名搜索（如「皇冠」「鞭炮」「钱包」）。也可以直接用系统表情面板：Win + ." + (EMOJI_SCAN.blank > 0 ? " 已自动隐藏 " + EMOJI_SCAN.blank + " 个本机字体没有字形的表情。" : "")
+        }, "常用表情在上面，点「全部表情」可搜索全部 " + emojiTotalLabel() + "（Win + . 也能调系统面板）")
       )
     ),
     section("字体与颜色", "font",
@@ -1736,32 +1796,24 @@ function Editor() {
         ], line.italic, function (value) { setLine({ italic: value === "true" || value === true }); }, "italic")
       ])
     ),
-    React.createElement("div", { className: "gs-sec", key: "alert" },
-      React.createElement("div", {
-        className: "gs-fold", role: "button", tabIndex: 0,
-        onClick: toggleAdvanced,
-        onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") toggleAdvanced(); }
-      },
-        React.createElement("span", { className: "gs-fold-caret" }, advanced ? "▼" : "▶"),
-        React.createElement("span", { className: "gs-sec-title", style: { marginBottom: 0 } }, "上下文提醒（阈值 = 进度条颜色分界）"),
-        React.createElement("span", { className: "gs-fold-sum" },
-          "黄 " + draft.warnPercent + "% · 红 " + draft.criticalPercent + "% · " + matchModeLabel(draft.matchMode))
-      ),
-      advanced
-        ? grid("alert-grid", [
-            sliderCell("黄色", draft.warnPercent, 1, 99, 1, "%", function (value) { patchTop({ warnPercent: value }); }, "warn"),
-            sliderCell("红色", draft.criticalPercent, 2, 100, 1, "%", function (value) { patchTop({ criticalPercent: value }); }, "crit"),
-            selectCell("匹配", [
-              { value: "exact", label: "逐字相同" },
-              { value: "loose", label: "宽松（推荐）" },
-              { value: "fuzzy", label: "近似容错（差一两个字也算）" }
-            ], draft.matchMode, function (value) { patchTop({ matchMode: value }); }, "matchMode", true),
-            selectCell("贴样式范围", [
-              { value: true, label: "只贴我的回复（推荐）" },
-              { value: false, label: "整段对话都贴" }
-            ], draft.onlyAssistant, function (value) { patchTop({ onlyAssistant: value === "true" || value === true }); }, "onlyAssistant", true)
-          ])
-        : null
+    section("上下文提醒与匹配（阈值 = 进度条颜色分界）", "alert",
+      grid("alert-grid", [
+        sliderCell("黄色", draft.warnPercent, 1, 99, 1, "%", function (value) { patchTop({ warnPercent: value }); }, "warn"),
+        sliderCell("红色", draft.criticalPercent, 2, 100, 1, "%", function (value) { patchTop({ criticalPercent: value }); }, "crit"),
+        selectCell("匹配", [
+          { value: "exact", label: "逐字相同" },
+          { value: "loose", label: "宽松（推荐）" },
+          { value: "fuzzy", label: "近似容错（差一两个字也算）" }
+        ], draft.matchMode, function (value) { patchTop({ matchMode: value }); }, "matchMode", true),
+        selectCell("贴样式范围", [
+          { value: true, label: "只贴我的回复（推荐）" },
+          { value: false, label: "整段对话都贴" }
+        ], draft.onlyAssistant, function (value) { patchTop({ onlyAssistant: value === "true" || value === true }); }, "onlyAssistant", true)
+      ]),
+      {
+        defaultOpen: false,
+        summary: "黄 " + draft.warnPercent + "% · 红 " + draft.criticalPercent + "% · " + matchModeLabel(draft.matchMode)
+      }
     ),
     section("旧文案兼容（可选 · 只影响显示，不写进提示词）", "legacy",
       React.createElement("div", { className: "gs-hint", key: "legacy-hint" },
@@ -1803,15 +1855,17 @@ function Editor() {
           onClick: function () { patchTop({ legacyLines: (draft.legacyLines || []).concat([{ text: "", style: "greeting" }]) }); }
         }, "+ 添加一条旧文案"),
         React.createElement("span", { className: "gs-hint" }, "最多 30 条；空行会拦住保存，填上或删掉即可")
-      )
+      ),
+      {
+        defaultOpen: false,
+        summary: (draft.legacyLines || []).length === 0 ? "未设置" : (draft.legacyLines || []).length + " 条"
+      }
     )
   ];
 
   // 进度条外观：纯前端偏好（存浏览器本地），选一下立即生效，不用保存、不用重启。
   var ui = useUiPrefs();
-  body.push(React.createElement("div", { className: "gs-sec", key: "bar" },
-    React.createElement("div", { className: "gs-sec-title" }, "进度条外观（立即生效，存浏览器本地）"),
-    grid("bar-grid", [
+  body.push(section("进度条外观（立即生效，存浏览器本地）", "bar", grid("bar-grid", [
       selectCell("形态", [
         { value: "full", label: "完整（进度条 + 小车 + 百分比）" },
         { value: "compact", label: "紧凑细条（不显示百分比气泡）" },
@@ -1878,33 +1932,23 @@ function Editor() {
             : React.createElement("span", { className: "gs-hint" }, "PNG / JPEG / GIF / WebP ≤250KB")
         )
       )
-    ])
-  ));
+    ]), { defaultOpen: false, summary: "配色 " + schemeOf(ui.scheme).label + " · " + (ui.marker === "" && ui.markerImage === "" ? "无小车" : "有车标") }));
   if (error !== "") body.push(React.createElement("div", { className: "gs-hint gs-hint-error", key: "error", role: "alert" }, error));
   else if (invalid !== null) body.push(React.createElement("div", { className: "gs-hint gs-hint-error", key: "invalid", role: "alert" }, "还差一步：" + invalid));
   if (notice !== "") body.push(React.createElement("div", { className: "gs-hint", key: "notice" }, notice));
   // 诊断：自查用。样式没贴上的时候，先看这里的"命中行数"和"跳过非助手"。
-  body.push(React.createElement("div", { className: "gs-sec", key: "diag" },
-    React.createElement("div", {
-      className: "gs-fold", role: "button", tabIndex: 0,
-      onClick: function () { setDiagOpen(!diagOpen); },
-      onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") setDiagOpen(!diagOpen); }
-    },
-      React.createElement("span", { className: "gs-fold-caret" }, diagOpen ? "▼" : "▶"),
-      React.createElement("span", { className: "gs-sec-title", style: { marginBottom: 0 } }, "诊断（样式没生效时先看这里）")
+  body.push(section("诊断（样式没生效时先看这里）", "diag",
+    React.createElement("div", { className: "gs-diag" },
+      React.createElement("div", null, "插件版本：v" + CLIENT_VERSION + "（浏览器半）"),
+      React.createElement("div", null, "配置文件：" + (store.path || "（未知，宿主半可能没加载）")),
+      React.createElement("div", null, "配置来源：" + (state.error ? "读取失败 · " + state.error : store.loaded ? "已读取" : "尚未读取")),
+      React.createElement("div", null, "贴样式器：运行 " + stylerStats.runs + " 次 · 上次耗时 " + stylerStats.lastMs + "ms"),
+      React.createElement("div", null, "上次扫描：命中 " + stylerStats.matched + " 行 / 重扫 " + stylerStats.scanned + " 块 / 共 " + stylerStats.blocks + " 块 · 跳过非助手 " + stylerStats.skippedNonAssistant + " 块"),
+      React.createElement("div", null, "匹配模式：" + matchModeLabel(state.config.matchMode) + " · 贴样式范围：" + (state.config.onlyAssistant === false ? "整段对话" : "只贴我的回复") + " · 旧文案 " + (state.config.legacyLines || []).length + " 条"),
+      React.createElement("div", null, "当前标签页命中：" + (typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0) + " 行（整页）"),
+      React.createElement("div", null, "宿主导航条读数：" + (typeof document !== "undefined" && document.querySelector(".gs-dock-bar") ? (document.querySelector(".gs-dock-bar").getAttribute("aria-valuenow") || "未知") : "未挂载"))
     ),
-    diagOpen
-      ? React.createElement("div", { className: "gs-diag" },
-          React.createElement("div", null, "插件版本：v" + CLIENT_VERSION + "（浏览器半）"),
-          React.createElement("div", null, "配置文件：" + (store.path || "（未知，宿主半可能没加载）")),
-          React.createElement("div", null, "配置来源：" + (state.error ? "读取失败 · " + state.error : store.loaded ? "已读取" : "尚未读取")),
-          React.createElement("div", null, "贴样式器：运行 " + stylerStats.runs + " 次 · 上次耗时 " + stylerStats.lastMs + "ms"),
-          React.createElement("div", null, "上次扫描：命中 " + stylerStats.matched + " 行 / 重扫 " + stylerStats.scanned + " 块 / 共 " + stylerStats.blocks + " 块 · 跳过非助手 " + stylerStats.skippedNonAssistant + " 块"),
-          React.createElement("div", null, "匹配模式：" + matchModeLabel(state.config.matchMode) + " · 贴样式范围：" + (state.config.onlyAssistant === false ? "整段对话" : "只贴我的回复") + " · 旧文案 " + (state.config.legacyLines || []).length + " 条"),
-          React.createElement("div", null, "当前标签页命中：" + (typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0) + " 行（整页）"),
-          React.createElement("div", null, "宿主导航条读数：" + (typeof document !== "undefined" && document.querySelector(".gs-dock-bar") ? (document.querySelector(".gs-dock-bar").getAttribute("aria-valuenow") || "未知") : "未挂载"))
-        )
-      : null
+    { defaultOpen: false, summary: "v" + CLIENT_VERSION }
   ));
   body.push(React.createElement("div", { className: "gs-actions", key: "actions" },
     React.createElement("button", {
