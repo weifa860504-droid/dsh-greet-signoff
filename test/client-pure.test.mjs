@@ -266,3 +266,34 @@ test('sanitizePool / sanitizePoolList：文案池清洗', () => {
   assert.deepEqual(t.sanitizePool(undefined), { enabled: false, mode: 'random', greeting: [], signOff: [] })
   assert.equal(t.sanitizePool({ enabled: true, mode: 'sequence' }).mode, 'sequence')
 })
+
+test('运行时变量：{model}/{count}/{elapsed}/{tokens} 用通配符匹配', () => {
+  const re = t.runtimeVarRegex('以上，本轮 {elapsed}')
+  assert.ok(re instanceof RegExp)
+  assert.equal(re.test('以上，本轮 12.4s'), true)
+  assert.equal(re.test('以上，本轮 820ms'), true)
+  assert.equal(re.test('以上，本轮 完全换了内容也认'), true)
+  assert.equal(re.test('以上，本轮'), false, '变量位置必须有内容')
+  // 没有运行时变量 → 不生成正则；时间变量不算运行时变量
+  assert.equal(t.runtimeVarRegex('以上，本轮 12s'), null)
+  assert.equal(t.runtimeVarRegex('今天是 {date}'), null)
+  // 正文里的正则元字符被安全转义
+  const re2 = t.runtimeVarRegex('结果（{tokens}）')
+  assert.equal(re2.test('结果（3.1k）'), true)
+  assert.equal(re2.test('结果 3.1k'), false)
+})
+
+test('matchLineText：含运行时变量的固定行，三种模式都能命中', () => {
+  const now = new Date('2026-09-18T12:00:00')
+  const wanted = t.compileWantedLine('signOff', '以上，本轮 {elapsed} · {tokens}', now)
+  assert.equal(wanted.length, 1)
+  for (const mode of ['exact', 'loose', 'fuzzy']) {
+    assert.equal(t.matchLineText('以上，本轮 12.4s · 3.1k', wanted[0], mode), true, mode)
+    assert.equal(t.matchLineText('完全不相干的一句话', wanted[0], mode), false, mode)
+  }
+  // 不含运行时变量的固定行，行为不变（逐字相同档仍然严格）
+  const plain = t.compileWantedLine('greeting', '你好，我是助手', now)
+  assert.equal(t.matchLineText('你好，我是助手', plain[0], 'exact'), true)
+  assert.equal(t.matchLineText('你好，我是助手！！', plain[0], 'exact'), false)
+  assert.equal(t.matchLineText('你好，我是助手！！', plain[0], 'loose'), true)
+})

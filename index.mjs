@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.7.0'
+const HOST_VERSION = '1.8.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -497,12 +497,15 @@ const poolTicks = { greeting: 0, signOff: 0 }
  * @param {Date} now 当前时间（动态变量用）。
  * @returns {string} 本轮要用的那一句（可能为空串）。
  */
-function pickLine(config, kind, now) {
-  const fixed = resolveTemplate(String((config[kind] ?? {}).text ?? ''), now).trim()
+function pickLine(config, kind, now, stats) {
+  const at = now instanceof Date ? now : new Date()
+  const fixed = resolveRuntimeVars(resolveTemplate(String((config[kind] ?? {}).text ?? ''), at), stats).trim()
   const pool = config.pool ?? {}
   if (pool.enabled !== true) return fixed
   const raw = Array.isArray(pool[kind]) ? pool[kind] : []
-  const list = raw.map((item) => resolveTemplate(item, now).trim()).filter((item) => item.length > 0)
+  const list = raw
+    .map((item) => resolveRuntimeVars(resolveTemplate(item, at), stats).trim())
+    .filter((item) => item.length > 0)
   if (list.length === 0) return fixed
   if (pool.mode === 'sequence') {
     const index = poolTicks[kind] % list.length
@@ -510,6 +513,122 @@ function pickLine(config, kind, now) {
     return list[index]
   }
   return list[Math.floor(Math.random() * list.length)]
+}
+
+/* ─── 本轮信息变量：{model} / {count} / {elapsed} / {tokens} ─────────────── */
+
+/**
+ * 按会话记「最近一次模型调用」的模型名、耗时、用量，以及本会话已经跑过几次调用。
+ * 数据源是 `llm/stream` 瀑布：只读 options、只透传 chunk，绝不改写请求。
+ * 只放内存 —— 用途是"下一轮的固定行里报个数"，不需要落盘。
+ */
+const sessionStats = new Map()
+
+/** 最近一次跑过模型调用的会话（拿不到精确会话时的兜底）。 */
+let lastStatsSessionId = undefined
+
+/** 按会话取统计；没有就返回 undefined。 */
+function statsFor(sessionId) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
+  return sessionStats.get(sessionId)
+}
+
+/** apply() 里存下来的插件上下文：提示段回调里要用它取 agents 服务。 */
+let pluginCtx = null
+
+/** 数字的紧凑写法：3100 → 3.1k；没有数据时给一个占位符。 */
+function formatTokenCount(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—'
+  if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M'
+  if (value >= 1000) return (value / 1000).toFixed(1) + 'k'
+  return String(Math.round(value))
+}
+
+/** 毫秒 → "12.4s" / "820ms"。 */
+function formatElapsed(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—'
+  if (ms < 1000) return Math.round(ms) + 'ms'
+  return (ms / 1000).toFixed(1) + 's'
+}
+
+/**
+ * 运行时变量名白名单。页面侧**不解析**这些变量，而是用通配符匹配，
+ * 所以两边的名单必须一致（客户端 client.js 里的 RUNTIME_VARS 也是这一份）。
+ */
+const RUNTIME_VARS = ['model', 'count', 'elapsed', 'lastelapsed', 'tokens', 'lasttokens']
+
+/**
+ * 解析"本轮信息变量"：
+ * `{model}` 最近一次调用用的模型 · `{count}` 本会话第几次模型调用（本次）·
+ * `{elapsed}` 上一次调用耗时 · `{tokens}` 上一次调用总 token。
+ * 这些值只有服务端知道，所以页面侧靠通配符匹配（换任何数值都贴得上样式）。
+ * @param {string} text 文案。
+ * @param {object|undefined} stats 当前会话的统计。
+ * @returns {string} 解析后的文案。
+ */
+function resolveRuntimeVars(text, stats) {
+  if (typeof text !== 'string' || text.indexOf('{') < 0) return text
+  return text.replace(/\{([a-zA-Z]+)\}/g, (all, rawName) => {
+    const name = String(rawName).toLowerCase()
+    if (name === 'model') return stats !== undefined && stats.lastModel.length > 0 ? stats.lastModel : '—'
+    if (name === 'count') return String((stats === undefined ? 0 : stats.rounds) + 1)
+    if (name === 'elapsed' || name === 'lastelapsed') return stats === undefined ? '—' : formatElapsed(stats.lastMs)
+    if (name === 'tokens' || name === 'lasttokens') return stats === undefined ? '—' : formatTokenCount(stats.lastTokens)
+    return all
+  })
+}
+
+/**
+ * 当前正在组装提示的会话。
+ * 优先用 `agents.currentInitiator()`（精确命中），取不到时退回"最近跑过一轮的会话"。
+ * @returns {{id: string|undefined, exact: boolean}} 会话 id 与是否是精确命中。
+ */
+function currentSessionIdInfo() {
+  try {
+    const agents = pluginCtx === null ? undefined : pluginCtx.get('agents')
+    const agent = agents === undefined || agents === null ? undefined : agents.currentInitiator()
+    if (agent !== undefined && agent !== null) {
+      if (typeof agent.id === 'string' && agent.id.length > 0) return { id: agent.id, exact: true }
+      const session = agent.session
+      if (session !== undefined && session !== null && typeof session.id === 'string' && session.id.length > 0) {
+        return { id: session.id, exact: true }
+      }
+    }
+  } catch (error) { /* 服务形态变了就退回兜底 */ }
+  return { id: lastStatsSessionId, exact: false }
+}
+
+/**
+ * 包一层流：统计"这一次调用跑了多久 / 用了多少 token / 哪个模型"，chunk 原样透传。
+ * @param {AsyncIterable} source 下游的 chunk 流。
+ * @param {string} sessionId 会话 id。
+ * @param {object} options 本次请求（只读，深冻结）。
+ * @returns {AsyncIterable} 原样透传的流。
+ */
+async function* trackStream(source, sessionId, options) {
+  const startedAt = Date.now()
+  let tokens = 0
+  try {
+    for await (const chunk of source) {
+      if (chunk !== null && chunk !== undefined && chunk.type === 'usage' && chunk.usage !== undefined) {
+        const usage = chunk.usage
+        const total = typeof usage.totalTokens === 'number'
+          ? usage.totalTokens
+          : Number(usage.inputTokens ?? 0) + Number(usage.outputTokens ?? 0)
+        if (Number.isFinite(total) && total > 0) tokens = total
+      }
+      yield chunk
+    }
+  } finally {
+    const entry = sessionStats.get(sessionId) ?? { rounds: 0, lastMs: 0, lastTokens: 0, lastModel: '', lastAt: 0 }
+    entry.rounds += 1
+    entry.lastMs = Date.now() - startedAt
+    entry.lastTokens = tokens
+    if (typeof options.model === 'string' && options.model.length > 0) entry.lastModel = options.model
+    entry.lastAt = Date.now()
+    sessionStats.set(sessionId, entry)
+    lastStatsSessionId = sessionId
+  }
 }
 
 /**
@@ -520,18 +639,8 @@ function pickLine(config, kind, now) {
  */
 function ruleText() {
   const config = readConfig()
-  const now = new Date()
-  const greeting = pickLine(config, 'greeting', now).trim()
-  const signOff = pickLine(config, 'signOff', now).trim()
-  if (greeting.length === 0 && signOff.length === 0) return ''
-  const lines = ['开场与收尾（本会话强制要求 / mandatory for every reply）：']
-  if (greeting.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样开头：${greeting}`)
-  if (signOff.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样结尾：${signOff}`)
-  lines.push('- 固定行要独立成行，保持原样、不翻译、不改写、不加序号或引号；不要省略。')
-  lines.push('- 只有这些固定行有格式要求；正文照常回答，保持正常详略。')
-  lines.push('- 包括工具调用后的最终回复在内，每一轮回复都适用；纯工具调用步骤不需要输出固定行。')
-  lines.push('- 图片与字体样式属于页面显示，不要试图在正文里放置图片或 Markdown 图片语法。')
-  return lines.join('\n')
+  const stats = statsFor(currentSessionIdInfo().id)
+  return ruleTextWith(config, stats)
 }
 
 function sendJson(res, status, value) {
@@ -575,8 +684,22 @@ function handleApi(req, res) {
     serveEmojiIndex(req, res)
     return
   }
+  // /api/greet-signoff/rule-text → 自检用：现在这一刻模型会看到的规则文本（含运行时变量解析结果）
+  if (pathname === `${API_PATH}/rule-text`) {
+    const info = currentSessionIdInfo()
+    const stats = statsFor(info.id)
+    sendJson(res, 200, {
+      ok: true,
+      hostVersion: HOST_VERSION,
+      sessionId: info.id ?? null,
+      exactSession: info.exact,
+      stats: stats === undefined ? null : { rounds: stats.rounds, lastMs: stats.lastMs, lastTokens: stats.lastTokens, lastModel: stats.lastModel },
+      text: ruleText(),
+    })
+    return
+  }
   if (method === 'GET') {
-    sendJson(res, 200, { ok: true, path: FILE_PATH, config: readConfig() })
+    sendJson(res, 200, { ok: true, path: FILE_PATH, hostVersion: HOST_VERSION, config: readConfig() })
     return
   }
   if (method === 'POST') {
@@ -604,6 +727,18 @@ function handleApi(req, res) {
  * @param ctx - 本行的插件上下文。
  */
 export function apply(ctx) {
+  pluginCtx = ctx
+
+  // 本轮信息变量：包一层 llm/stream 只做统计（不改请求、不改 chunk）。
+  const offStream = ctx.on('llm/stream', (options, next) => {
+    const stream = next()
+    const sessionId = options !== null && options !== undefined && typeof options.sessionId === 'string' ? options.sessionId : undefined
+    // 压缩、起标题这类内部调用不算"一轮回复"，不参与统计
+    if (sessionId === undefined || options.purpose !== undefined) return stream
+    return trackStream(stream, sessionId, options)
+  }, { global: true })
+  ctx.effect(() => offStream, 'greet-signoff:stream-stats')
+
   const prompt = ctx.get('systemPrompt')
   if (prompt === undefined) {
     console.error('[greet-signoff] systemPrompt service unavailable')
@@ -625,4 +760,35 @@ export function apply(ctx) {
   }
 
   console.log(`[greet-signoff] mounted v${HOST_VERSION}; config file: ${FILE_PATH}; client bundle: ${CLIENT_PATH}`)
+}
+
+/**
+ * 仅供单测使用：DSH 的模块加载器只认 name/inject/apply，不会读这个导出。
+ */
+export const __test = {
+  pickLine,
+  resolveRuntimeVars,
+  resolveTemplate,
+  formatElapsed,
+  formatTokenCount,
+  sanitizePool,
+  sanitizePoolList,
+  normalize,
+  ruleTextWith,
+}
+
+/** 自检/单测用：给定配置与统计，算出模型会看到的规则文本。 */
+function ruleTextWith(config, stats) {
+  const now = new Date()
+  const greeting = pickLine(config, 'greeting', now, stats).trim()
+  const signOff = pickLine(config, 'signOff', now, stats).trim()
+  if (greeting.length === 0 && signOff.length === 0) return ''
+  const lines = ['开场与收尾（本会话强制要求 / mandatory for every reply）：']
+  if (greeting.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样开头：${greeting}`)
+  if (signOff.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样结尾：${signOff}`)
+  lines.push('- 固定行要独立成行，保持原样、不翻译、不改写、不加序号或引号；不要省略。')
+  lines.push('- 只有这些固定行有格式要求；正文照常回答，保持正常详略。')
+  lines.push('- 包括工具调用后的最终回复在内，每一轮回复都适用；纯工具调用步骤不需要输出固定行。')
+  lines.push('- 图片与字体样式属于页面显示，不要试图在正文里放置图片或 Markdown 图片语法。')
+  return lines.join('\n')
 }

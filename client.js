@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.7.0";
+var CLIENT_VERSION = "1.8.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -667,6 +667,10 @@ function css() {
     ".gs-pool{margin-top:10px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l2);flex-direction:column;gap:6px;display:flex}",
     ".gs-pool-head{justify-content:space-between;width:100%}",
     ".gs-pool-text{min-height:70px}",
+    // 自检：结论按行排，全绿时加一条左侧绿边，一眼能看出"没事"
+    ".gs-selfcheck{margin-top:8px;display:flex;flex-direction:column;gap:6px}",
+    ".gs-selfcheck-lines{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:2px}",
+    ".gs-selfcheck-ok{border-color:var(--dsw-alias-state-success-primary,var(--dsw-alias-border-l2))}",
     ".gs-tab{height:26px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}",
     ".gs-tab-on{border-color:transparent;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1)}",
     ".gs-mark{height:30px;min-width:36px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:0 0;color:var(--dsw-alias-label-primary);font-size:17px;line-height:1;cursor:pointer}",
@@ -1778,6 +1782,62 @@ function Editor() {
     patchTop({ pool: Object.assign({}, poolCfg, patch) });
   }
 
+  /** 自检结果（null = 还没跑过）。 */
+  var selfCheckPair = React.useState(null);
+  var selfCheck = selfCheckPair[0];
+  var setSelfCheck = selfCheckPair[1];
+
+  /**
+   * 跑一遍自检：把"样式没生效/数字不对/看着怪"这类问题一次问到底，
+   * 逐项给 ✅/⚠️ 与一句话结论，不用再来回翻设置。
+   */
+  function runSelfCheck() {
+    var lines = [];
+    var fails = 0;
+    function add(ok, text) {
+      if (!ok) fails += 1;
+      lines.push((ok ? "✅ " : "⚠️ ") + text);
+    }
+    function report() { setSelfCheck({ running: false, lines: lines, ok: fails === 0 }); }
+
+    var cfg = state.config;
+    add(state.loaded, "配置读取：" + (state.loaded ? (state.path || "已读取") : "失败 · " + (state.error || "未知原因")));
+    var gText = typeof cfg.greeting.text === "string" ? cfg.greeting.text.trim() : "";
+    var sText = typeof cfg.signOff.text === "string" ? cfg.signOff.text.trim() : "";
+    var poolNow = cfg.pool !== undefined && cfg.pool !== null ? cfg.pool : DEFAULTS.pool;
+    var poolCount = (Array.isArray(poolNow.greeting) ? poolNow.greeting.length : 0) + (Array.isArray(poolNow.signOff) ? poolNow.signOff.length : 0);
+    add(gText.length > 0 || sText.length > 0 || poolCount > 0,
+      "固定文案：开场 " + (gText.length > 0 ? "有" : "空") + " / 收尾 " + (sText.length > 0 ? "有" : "空")
+      + " · 文案池 " + (poolNow.enabled === true ? "开启（" + poolCount + " 句）" : "未开启"));
+    var hits = typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0;
+    add(stylerStats.runs > 0, "贴样式器：运行 " + stylerStats.runs + " 次 · 本页命中 " + hits + " 行（命中 0 说明当前这页还没有对得上的固定行）");
+    var dock = typeof document !== "undefined" ? document.querySelector(".gs-dock-bar") : null;
+    add(dock !== null, "进度条：" + (dock !== null ? "已挂载（读数 " + (dock.getAttribute("aria-valuenow") || "未知") + "）" : "未挂载（输入框上方的卡片没出现）"));
+    add(true, "连接自愈：检查 " + healStats.checks + " 次 · 异常 " + healStats.stuck + " 次 · 自动重载 " + healStats.reloads + " 次");
+
+    setSelfCheck({ running: true, lines: lines, ok: false });
+    fetch("/api/greet-signoff", { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (data === null) { add(false, "宿主半：配置接口没响应（插件可能没加载）"); report(); return null; }
+        var same = data.hostVersion === CLIENT_VERSION;
+        add(same, "版本：宿主半 v" + (data.hostVersion || "?") + " / 浏览器半 v" + CLIENT_VERSION + (same ? "" : "（不一致 → 需要重启一次 dsh web）"));
+        return fetch("/api/greet-signoff/rule-text", { cache: "no-store" })
+          .then(function (response) { return response.ok ? response.json() : null; });
+      })
+      .then(function (rt) {
+        if (rt !== null && rt !== undefined) {
+          var text = typeof rt.text === "string" ? rt.text : "";
+          add(text.length > 0, "规则文本：" + (text.length > 0 ? "生成正常（" + text.length + " 字）" : "为空 —— 两行文案都空时属正常"));
+          var stats = rt.stats;
+          add(true, "会话识别：" + (rt.sessionId === null || rt.sessionId === undefined ? "还没跑过模型调用" : (rt.exactSession === true ? "精确命中" : "兜底命中（最近跑过的会话）"))
+            + " · 上一轮统计：" + (stats === null || stats === undefined ? "暂无" : (stats.rounds + " 次调用 / " + stats.lastMs + "ms / " + stats.lastTokens + " tokens / " + (stats.lastModel || "模型未知"))));
+        }
+        report();
+      })
+      .catch(function () { add(false, "自检请求失败（服务可能刚重启或没在跑）"); report(); });
+  }
+
   var body = [
     // 顶部：标签页 + 状态 + 实时预览，一起吸顶。这样往下调参数时预览始终可见，
     // 不用"滚下去改完再滚回来看"。
@@ -1892,7 +1952,9 @@ function Editor() {
         React.createElement("div", { className: "gs-emojis", key: "vars" },
           React.createElement("span", { className: "gs-label" }, "动态变量（点一下插到末尾）"),
           [["{date}", "日期，如 2026-09-18"], ["{weekday}", "星期几"], ["{daypart}", "早上好 / 下午好 / 晚上好…"],
-            ["{year}", "年"], ["{month}", "月"], ["{day}", "日"], ["{time}", "时:分"]
+            ["{year}", "年"], ["{month}", "月"], ["{day}", "日"], ["{time}", "时:分"],
+            ["{count}", "本会话第几次模型调用（本次）"], ["{model}", "最近一次调用用的模型名"],
+            ["{elapsed}", "上一次调用耗时，如 12.4s"], ["{tokens}", "上一次调用用量，如 3.1k"]
           ].map(function (pair) {
             return React.createElement("button", {
               key: pair[0], type: "button", className: "gs-tagbtn", title: pair[1],
@@ -1905,6 +1967,8 @@ function Editor() {
         ),
         React.createElement("div", { className: "gs-hint", key: "resolved" },
           "现在会解析成：" + (resolveTemplate(line.text, new Date()).replace(/\n/g, " ⏎ ") || "（空）")),
+        React.createElement("div", { className: "gs-hint", key: "runtime-vars" },
+          "{count} {model} {elapsed} {tokens} 由服务端每轮填真实值（{elapsed} 与 {tokens} 是**上一次调用**的），页面按通配符匹配，所以数值怎么变都能贴上样式。"),
         React.createElement("div", {
           className: "gs-hint",
           title: "点「全部表情」展开全部可显示表情（" + emojiTotalLabel() + "），可用中文名搜索（如「皇冠」「鞭炮」「钱包」）。也可以直接用系统表情面板：Win + ." + (EMOJI_SCAN.blank > 0 ? " 已自动隐藏 " + EMOJI_SCAN.blank + " 个本机字体没有字形的表情。" : "")
@@ -2263,7 +2327,20 @@ function Editor() {
       React.createElement("div", null, "匹配模式：" + matchModeLabel(state.config.matchMode) + " · 贴样式范围：" + (state.config.onlyAssistant === false ? "整段对话" : "只贴我的回复") + " · 旧文案 " + (state.config.legacyLines || []).length + " 条"),
       React.createElement("div", null, "当前标签页命中：" + (typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0) + " 行（整页）"),
       React.createElement("div", null, "宿主导航条读数：" + (typeof document !== "undefined" && document.querySelector(".gs-dock-bar") ? (document.querySelector(".gs-dock-bar").getAttribute("aria-valuenow") || "未知") : "未挂载")),
-      React.createElement("div", null, "连接自愈：检查 " + healStats.checks + " 次 · 看到异常 " + healStats.stuck + " 次 · 已自动重载 " + healStats.reloads + " 次（" + (healStats.lastWhy || "暂无动作") + "）")
+      React.createElement("div", null, "连接自愈：检查 " + healStats.checks + " 次 · 看到异常 " + healStats.stuck + " 次 · 已自动重载 " + healStats.reloads + " 次（" + (healStats.lastWhy || "暂无动作") + "）"),
+      React.createElement("div", { className: "gs-selfcheck" },
+        React.createElement("button", {
+          type: "button", className: "gs-btn",
+          disabled: selfCheck !== null && selfCheck.running === true,
+          onClick: function () { runSelfCheck(); }
+        }, selfCheck !== null && selfCheck.running === true ? "自检中…" : "跑一遍自检"),
+        React.createElement("span", { className: "gs-hint" }, "一次问到底：配置、文案、贴样式、进度条、连接自愈、宿主半版本与上一轮统计"),
+        selfCheck === null ? null : React.createElement("div", {
+          className: selfCheck.ok === true ? "gs-selfcheck-lines gs-selfcheck-ok" : "gs-selfcheck-lines"
+        }, (selfCheck.lines || []).map(function (line, index) {
+          return React.createElement("div", { key: "sc-" + index }, line);
+        }))
+      )
     ),
     { defaultOpen: false, summary: "v" + CLIENT_VERSION }
   ));
@@ -2732,10 +2809,14 @@ function matchLineText(rawText, wanted, mode) {
   var norm = normalizeFixedLine(rawText);
   if (norm.length === 0) return false;
   if (norm === wanted.norm) return true;
+  // 含运行时变量的固定行：服务端会把 {model}/{count}/{elapsed}/{tokens} 换成具体值，
+  // 页面这边用通配符匹配，数值换成多少都认得。
+  if (wanted.runtimeNormRe !== undefined && wanted.runtimeNormRe !== null && wanted.runtimeNormRe.test(norm)) return true;
   // 逐字相同档只认"归一化后完全相同"（含标点），不做任何折叠
   if (mode === "exact") return false;
   var fold = foldFixedLine(rawText);
   if (fold.length > 0 && fold === wanted.fold) return true;
+  if (wanted.runtimeFoldRe !== undefined && wanted.runtimeFoldRe !== null && fold.length > 0 && wanted.runtimeFoldRe.test(fold)) return true;
   if (mode !== "fuzzy") return false;
   if (fold.length < FUZZY_MIN_LENGTH || wanted.fold.length < FUZZY_MIN_LENGTH) return false;
   // 长度差太多就别算了：既省时间，也避免把"短句"近似到"另一句"
@@ -2790,6 +2871,32 @@ function resolveTemplate(text, now) {
 }
 
 /**
+ * "本轮信息变量"名单：这些变量的值只有服务端知道（模型名、第几次调用、上一次耗时与用量），
+ * 页面侧**不解析**它们，而是把它们换成通配符来匹配 —— 这样服务端换成任何数值都贴得上样式。
+ * 名单必须与宿主半 index.mjs 的 RUNTIME_VARS 保持一致。
+ */
+var RUNTIME_VARS = ["model", "count", "elapsed", "lastelapsed", "tokens", "lasttokens"];
+
+/**
+ * 把含运行时变量的文案编译成"通配符正则"；不含这类变量时返回 null。
+ * 做法：先把变量换成不可能出现的占位符 → 整体正则转义 → 再把占位符换成 `.+?`。
+ * @param text - 已经过归一化或折叠的文案。
+ * @returns {RegExp|null} 可用来匹配整行的正则。
+ */
+function runtimeVarRegex(text) {
+  if (typeof text !== "string" || text.indexOf("{") < 0) return null;
+  var hit = false;
+  var marked = text.replace(/\{([a-zA-Z]+)\}/g, function (all, rawName) {
+    if (RUNTIME_VARS.indexOf(String(rawName).toLowerCase()) < 0) return all;
+    hit = true;
+    return "\u0001";
+  });
+  if (!hit) return null;
+  var escaped = marked.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("^" + escaped.split("\u0001").join(".+?") + "$");
+}
+
+/**
  * 一处文案的所有候选解析结果。带 `{daypart}` 时把所有时段都作为候选，
  * 这样刚好跨过时段边界（比如 18:00 前后）时，样式仍然贴得上。
  * @param {string} text 原始模板。
@@ -2832,6 +2939,9 @@ function compileWantedLine(key, rawText, now) {
       text: text,
       norm: normalizeFixedLine(text),
       fold: foldFixedLine(text),
+      // 含 {model}/{count}/{elapsed}/{tokens} 时，值只有服务端知道 → 用通配符匹配整行
+      runtimeNormRe: runtimeVarRegex(normalizeFixedLine(text)),
+      runtimeFoldRe: runtimeVarRegex(foldFixedLine(text)),
       segments: segments,
       multi: segments.length > 1
     });
@@ -3565,6 +3675,8 @@ module.exports = {
     isReconnectStuckText: isReconnectStuckText,
     sanitizePool: sanitizePool,
     sanitizePoolList: sanitizePoolList,
+    runtimeVarRegex: runtimeVarRegex,
+    matchLineText: matchLineText,
     splitGraphemes: splitGraphemes,
     renderLineText: renderLineText
   }
