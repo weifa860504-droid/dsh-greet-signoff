@@ -64,6 +64,7 @@ dsh plugin --profile web add <本地包目录的绝对路径>
 | --- | --- |
 | Prompt 段 | 向系统提示注册「开场与收尾」规则，每次组装提示时实时读取配置，因此改文案立即生效 |
 | 配置接口 | `GET /api/greet-signoff` 读真值、`POST /api/greet-signoff` 写整份配置（设置页用的就是它） |
+| 资源接口 | `GET /api/greet-signoff/asset/<name>` 回自定义图片；`GET /api/greet-signoff/emoji-index` 回表情中文名/关键词索引（浏览器半**首次展开表情框时才取**，主包因此小了 51KB） |
 | 设置 UI | 注册 `settings.section`（设置页「开场收尾」）与 `settings.general.item`（通用页入口行） |
 | 状态 UI | 注册 `conversation.input.dock`，在输入框上方渲染上下文占用导航条 |
 
@@ -182,11 +183,15 @@ dsh plugin --profile web remove <包名>  # 卸载（装完同样重启 web）
 
 ## 版本与更新
 
-版本历史见 [CHANGELOG.md](CHANGELOG.md)。发布前自检（元数据、发布物清单、占位符、CHANGELOG 一致性）：
+版本历史见 [CHANGELOG.md](CHANGELOG.md)。开发/发版前的自检：
 
 ```sh
-node scripts/verify-manifest.mjs
+node --test test/                      # 13 个纯函数单测（把 client.js 用最小 DOM 桩加载进 Node）
+node scripts/verify-manifest.mjs       # 元数据、发布物清单、占位符、CHANGELOG 版本一致性
+npm pack --dry-run                     # 预览真正会被打包的文件
 ```
+
+发版流程（含 CI 启用与 npm 发布步骤）见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 许可
 

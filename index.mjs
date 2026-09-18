@@ -78,6 +78,8 @@ const DSH_HOME = process.env.DSH_HOME && process.env.DSH_HOME.length > 0
 const FILE_PATH = join(DSH_HOME, 'greet-signoff.json')
 const ASSET_DIR = join(DSH_HOME, 'greet-signoff-assets')
 const CLIENT_PATH = fileURLToPath(new URL('./client.js', import.meta.url))
+/** 表情中文名/关键词索引（1.2.0 起从 client.js 里搬出来，首次打开表情框才加载）。 */
+const EMOJI_INDEX_PATH = fileURLToPath(new URL('./emoji-zh.json', import.meta.url))
 
 const DEFAULT_LINE = {
   text: '',
@@ -360,8 +362,36 @@ function serveAsset(req, res, name) {
   }
 }
 
-/* ─── 动态变量（与浏览器半保持同一套规则） ───────────────────────────── */
+/**
+ * 表情索引：从 emoji-zh.json 读一次并缓存成响应体（浏览器半首次展开表情框时才来取）。
+ */
+let emojiIndexBody = null
 
+function serveEmojiIndex(req, res) {
+  const method = req.method ?? 'GET'
+  if (method !== 'GET' && method !== 'HEAD') {
+    sendJson(res, 405, { ok: false, error: `method ${method} not allowed` })
+    return
+  }
+  if (emojiIndexBody === null) {
+    try {
+      const parsed = JSON.parse(readFileSync(EMOJI_INDEX_PATH, 'utf8'))
+      emojiIndexBody = JSON.stringify({ ok: true, source: parsed.source ?? '', index: parsed.index ?? {} })
+    } catch (error) {
+      console.error('[greet-signoff] emoji index unreadable:', error.message)
+      sendJson(res, 500, { ok: false, error: 'emoji index unreadable' })
+      return
+    }
+  }
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'public, max-age=86400',
+    'content-length': Buffer.byteLength(emojiIndexBody),
+  })
+  res.end(method === 'HEAD' ? undefined : emojiIndexBody)
+}
+
+/* ─── 动态变量（与浏览器半保持同一套规则） ───────────────────────────── */
 const WEEKDAY_NAMES = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
 const DAYPART_NAMES = ['凌晨好', '早上好', '上午好', '中午好', '下午好', '晚上好', '夜深了']
 
@@ -457,6 +487,11 @@ function handleApi(req, res) {
   // /api/greet-signoff/asset/<name> → 直接回图片文件
   if (pathname.indexOf(ASSET_PREFIX) === 0) {
     serveAsset(req, res, pathname.slice(ASSET_PREFIX.length))
+    return
+  }
+  // /api/greet-signoff/emoji-index → 表情中文名/关键词索引（浏览器半懒加载用）
+  if (pathname === `${API_PATH}/emoji-index`) {
+    serveEmojiIndex(req, res)
     return
   }
   if (method === 'GET') {

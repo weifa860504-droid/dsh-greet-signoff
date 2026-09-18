@@ -40,7 +40,7 @@ function checkFilesList(pkg) {
     if (!existsSync(target)) problems.push(`files 里列了不存在的路径：${entry}`)
   }
   // 真正会被 npm pack 带走的顶层文件（docs/ 与 .github/ 之类目录按白名单决定）
-  const required = ['index.mjs', 'client.js', 'cordis.patch.yml', 'README.md', 'CHANGELOG.md', 'LICENSE']
+  const required = ['index.mjs', 'client.js', 'emoji-zh.json', 'cordis.patch.yml', 'README.md', 'CHANGELOG.md', 'LICENSE']
   for (const file of required) {
     if (!listed.has(file)) problems.push(`files 少了 ${file}（发布物里必须有它）`)
   }

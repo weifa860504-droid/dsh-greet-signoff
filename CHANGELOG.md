@@ -3,6 +3,28 @@
 本文件记录 `dsh-greet-signoff` 的每个发布版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-09-18
+
+工程批次：补上回归网、把 51KB 表情索引搬出主包、打包与 CI 就绪。
+
+### 新增
+
+- **单元测试**（`npm test` / `node --test test/`）：用最小 DOM 桩把 `client.js` 当模块加载进 Node，
+  通过模块底部新增的 `__test` 钩子直接测里面那些纯函数 —— 覆盖归一化与三档匹配、近似档的短句保护、
+  动态变量解析（含 `{daypart}` 多时段候选）、多行分段、配置归一化与夹紧、旧文案表清洗、空行拦截、
+  占用百分比与 `k/M` 格式化、颜色插值与色带。13 个用例，跑的是**真代码**，不是复制品。
+- **表情索引外置 + 懒加载**：`emoji-zh.json`（1364 条中文名/关键词，89KB）从 `client.js` 里搬出来，
+  改由宿主 `GET /api/greet-signoff/emoji-index` 提供；**首次展开表情框时才加载**，
+  同时把"扫描 3800 个码位"也推迟到那一刻。主包 `client.js` 从 236KB 降到 **152KB**，
+  页面加载时不再同步跑字体测量。
+
+### 变更
+
+- `docs/ci-workflow.yml` 增加"跑单测"与"表情索引可解析"两步（启用见 `docs/RELEASING.md`）。
+- `package.json` 增加 `test` 脚本；`files` 白名单加入 `emoji-zh.json`；
+  `scripts/verify-manifest.mjs` 把它列为必需发布物。
+- `docs/RELEASING.md` 补充 CI 启用的确切步骤与 npm 发布流程。
+
 ## [1.2.0] - 2026-09-18
 
 "更好贴、更省事"的一版：匹配放宽到三档并支持近似容错，历史文案也能贴样式，配置从"手调 19 项"变成"点一下"。

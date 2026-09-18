@@ -8,8 +8,9 @@
 ```sh
 node --check index.mjs
 node --check client.js
-node scripts/verify-manifest.mjs      # 元数据 / 发布物清单 / 占位符 / CHANGELOG 版本一致性
-npm pack --dry-run                    # 看一眼真正会被打包的文件
+node --test test/                      # 13 个纯函数单测（用最小 DOM 桩加载 client.js）
+node scripts/verify-manifest.mjs       # 元数据 / 发布物清单 / 占位符 / CHANGELOG 版本一致性
+npm pack --dry-run                     # 看一眼真正会被打包的文件
 ```
 
 再确认三件事：
@@ -18,15 +19,35 @@ npm pack --dry-run                    # 看一眼真正会被打包的文件
 - `package.json` 的 `dsh.compatibility.dshReleases` 里写的版本都是**本机实际跑过**的，不要凭猜写 `compatible`；
 - `author` / `repository` / `homepage` / `bugs` / `LICENSE` 里的用户名是当前 GitHub 账号，没有残留占位符。
 
-### 可选：开启 CI
+### 可选：开启 CI（当前仓库尚未启用）
 
-`docs/ci-workflow.yml` 是一份现成的 GitHub Actions 工作流（语法检查 + `verify-manifest` + `npm pack --dry-run`）。
-想启用就把它复制到 `.github/workflows/ci.yml` 再推一次即可。
+`docs/ci-workflow.yml` 是一份现成的 GitHub Actions 工作流（语法检查 + 单测 + `verify-manifest` + `npm pack --dry-run` + 表情索引可解析）。
+**启用只需 30 秒，在浏览器里做**（因为 token 权限限制，命令行推不上去）：
 
-注意：**推送 `.github/workflows/` 下的文件要求 token 带 `workflow` 权限**（classic token 需在 `repo` 之外额外勾选，
-fine-grained token 需要 "Workflows" 写权限）。缺这个权限时，GitHub 会**整条拒绝**这次 push（哪怕其它文件都合法），
-报错形如 `refusing to allow a Personal Access Token to create or update workflow ... without workflow scope`；
-Contents API 走同一条校验，返回 404。这也是本仓库当前把它放成模板、没有直接启用 CI 的原因。
+1. 打开 https://github.com/weifa860504-droid/dsh-greet-signoff/new/main/.github/workflows
+2. 文件名填 `ci.yml`，把 `docs/ci-workflow.yml` 的内容整段粘进去
+3. 点 **Commit changes**
+
+> 为什么不能用命令行：**推送 `.github/workflows/` 下的文件要求 token 带 `workflow` 权限**
+> （classic token 需在 `repo` 之外额外勾选，fine-grained token 需要 "Workflows" 写权限）。
+> 缺这个权限时，GitHub 会**整条拒绝**这次 push（哪怕其它文件都合法），报错形如
+> `refusing to allow a Personal Access Token to create or update workflow ... without workflow scope`；
+> Contents API 走同一条校验，返回 404。给 token 补上 `workflow` 权限后，也可以直接
+> `git mv docs/ci-workflow.yml .github/workflows/ci.yml && git-push.ps1 <repo> origin main` 一步到位。
+
+### 可选：发布到 npm
+
+包内容已经过 `npm pack --dry-run` 校验（`index.mjs` / `client.js` / `emoji-zh.json` / `cordis.patch.yml` / README / CHANGELOG / LICENSE / docs）。
+发布需要你自己的 npm 账号：
+
+```sh
+npm login                 # 首次需要，浏览器或 OTP 登录
+npm publish --access public
+npm view dsh-greet-signoff version     # 回读确认
+```
+
+发布后用户可以直接 `dsh plugin --profile web add dsh-greet-signoff`（比 `github:` 安装更标准）。
+若开了 2FA，`npm publish` 会要求一次性验证码。
 
 ## 1. 本机安装冒烟测试 🔴
 

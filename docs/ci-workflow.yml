@@ -26,9 +26,14 @@ jobs:
           node --check client.js
           node --check scripts/verify-manifest.mjs
 
+      - name: 单元测试（浏览器半的纯函数，用最小 DOM 桩加载 client.js）
+        run: node --test test/
+
       - name: 发布自检（元数据 / 发布物清单 / 占位符 / CHANGELOG）
         run: node scripts/verify-manifest.mjs
 
       - name: npm 打包清单
-        run: |
-          npm pack --dry-run
+        run: npm pack --dry-run
+
+      - name: 表情索引可解析
+        run: node -e "const d=require('node:fs').readFileSync('emoji-zh.json','utf8');const j=JSON.parse(d);if(!j.index||Object.keys(j.index).length<1000)throw new Error('emoji-zh.json 异常');console.log('emoji index entries:',Object.keys(j.index).length)"
