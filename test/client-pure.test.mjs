@@ -343,3 +343,48 @@ test('sanitizeScenes：场景表清洗与自我嵌套防护', () => {
   const many = { active: '', items: Array.from({ length: 12 }, (_, i) => ({ id: 's' + i, name: 'n' + i, config: cfgA })) }
   assert.equal(t.sanitizeScenes(many).items.length, 8)
 })
+
+test('sanitizeWorkspaceBindings：工作区绑定的清洗与路径归一', () => {
+  const clean = t.sanitizeWorkspaceBindings({
+    enabled: true,
+    items: [
+      { path: ' E:\\harness ', greeting: '干活开场', signOff: '干活收尾' },
+      { path: '', greeting: '空路径', signOff: '' },                  // 路径空 → 丢
+      { path: 'D:\\x', greeting: '', signOff: '' },                    // 两行都空 → 丢
+      { path: 'D:\\y', greeting: '只有开场', signOff: '' }              // 只有开场 → 保留
+    ]
+  })
+  assert.equal(clean.enabled, true)
+  assert.equal(clean.items.length, 2)
+  assert.equal(clean.items[0].path, 'E:\\harness')
+  assert.equal(clean.items[0].greeting, '干活开场')
+  assert.equal(clean.items[1].signOff, '')
+  // 路径归一：大小写、斜杠、末尾分隔符
+  assert.equal(t.pathKey('E:/HARNESS/'), 'e:\\harness')
+  assert.equal(t.pathKey('E:\\harness\\\\'), 'e:\\harness')
+  assert.equal(t.pathKey(undefined), '')
+  // 缺字段 → 默认关闭 + 空表
+  assert.deepEqual(t.sanitizeWorkspaceBindings(undefined), { enabled: false, items: [] })
+  assert.equal(t.sanitizeWorkspaceBindings({ enabled: 'yes' }).enabled, false)
+})
+
+test('lineStyleSource：复制外观时不带走文案与图片', () => {
+  const line = {
+    text: '开场白', image: 'data:image/png;base64,AAA', imageHeight: 22,
+    fontSize: 18, fontWeight: 700, color: '#ff0000', shape: 'pill', animation: 'bounce',
+  }
+  const style = t.lineStyleSource(line)
+  assert.equal(style.text, undefined)
+  assert.equal(style.image, undefined)
+  assert.equal(style.fontSize, 18)
+  assert.equal(style.color, '#ff0000')
+  assert.equal(style.shape, 'pill')
+  assert.equal(style.animation, 'bounce')
+  // 只带走"传入行里真的有"的样式字段（真实配置里的行是归一化过的，字段齐全）
+  assert.deepEqual(Object.keys(style).sort(), ['animation', 'color', 'fontSize', 'fontWeight', 'imageHeight', 'shape'])
+  // 目标行套用后文案不变
+  const target = { text: '收尾语', fontSize: 12 }
+  const merged = Object.assign({}, target, style)
+  assert.equal(merged.text, '收尾语')
+  assert.equal(merged.fontSize, 18)
+})

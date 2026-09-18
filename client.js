@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.9.0";
+var CLIENT_VERSION = "1.10.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -568,8 +568,41 @@ var DEFAULTS = {
   // 文案池：池子非空且开关打开时，每次回复从池子里挑一句（挑的动作在宿主半，页面只负责把池子里每一句都贴上样式）。
   pool: { enabled: false, mode: "random", greeting: [], signOff: [] },
   // 场景：整份配置的快照（文案 + 样式 + 阈值 + 文案池），用于"工作 / 生活 / 深夜"一键整体切换。
-  scenes: { active: "", items: [] }
+  scenes: { active: "", items: [] },
+  // 按工作区自动换文案：命中当前会话的工作目录时用这一条的文案（优先级最高）。
+  perWorkspace: { enabled: false, items: [] }
 };
+
+/** 按工作区绑定：最多几条（与宿主半保持一致）。 */
+var WORKSPACE_MAX = 8;
+var WORKSPACE_PATH_MAX = 260;
+
+/** 路径归一：Windows 下不区分大小写、斜杠统一、去掉末尾分隔符。 */
+function pathKey(value) {
+  return String(value === undefined || value === null ? "" : value).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+
+/**
+ * 清洗"按工作区绑定文案"表：路径为空、开场与收尾都空的条目直接丢掉。
+ * @param raw - 任意输入。
+ * @returns {Object} { enabled, items }。
+ */
+function sanitizeWorkspaceBindings(raw) {
+  var src = raw !== null && typeof raw === "object" ? raw : {};
+  var list = Array.isArray(src.items) ? src.items : [];
+  var items = [];
+  for (var i = 0; i < list.length && items.length < WORKSPACE_MAX; i += 1) {
+    var item = list[i];
+    if (item === null || typeof item !== "object") continue;
+    var path = typeof item.path === "string" ? item.path.trim().slice(0, WORKSPACE_PATH_MAX) : "";
+    if (path.length === 0) continue;
+    var greeting = typeof item.greeting === "string" ? item.greeting.trim().slice(0, TEXT_LIMIT) : "";
+    var signOff = typeof item.signOff === "string" ? item.signOff.trim().slice(0, TEXT_LIMIT) : "";
+    if (greeting.length === 0 && signOff.length === 0) continue;
+    items.push({ path: path, greeting: greeting, signOff: signOff });
+  }
+  return { enabled: src.enabled === true, items: items };
+}
 
 /** 场景：最多几个、名字多长（与宿主半保持一致）。 */
 var SCENES_MAX = 8;
@@ -709,6 +742,21 @@ function css() {
     ".gs-scene-list{flex-wrap:wrap;gap:6px;display:flex;margin:6px 0}",
     ".gs-scene-item{align-items:center;gap:2px;display:inline-flex}",
     ".gs-scene-mini{min-width:26px;padding:0 6px}",
+    // 一键外观的小样卡：两列自适应网格，每张卡里直接渲染当前文案的样子
+    ".gs-preset-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:6px}",
+    ".gs-preset-card{flex-direction:column;gap:4px;padding:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);cursor:pointer;text-align:left;display:flex}",
+    ".gs-preset-card:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+    ".gs-preset-card-on{border-color:var(--dsw-alias-label-primary)}",
+    ".gs-preset-card-head{align-items:center;gap:5px;display:inline-flex;color:var(--dsw-alias-label-secondary);font-size:12px}",
+    ".gs-preset-card-demo{display:block;pointer-events:none;overflow:hidden}",
+    // 常用色板（底色/边色各一排小方块，点一下即设并自动启用）
+    ".gs-swatches{gap:3px;display:inline-flex;flex-wrap:wrap}",
+    ".gs-swatch-mini{width:16px;height:16px;border-radius:5px;border-width:1px}",
+    // 图片拖拽区
+    ".gs-dropzone{align-items:center;gap:6px;flex-wrap:wrap;display:inline-flex;padding:2px;border-radius:10px}",
+    ".gs-dropzone.gs-dropzone-on{outline:2px dashed var(--dsw-alias-label-primary);outline-offset:2px}",
+    // 工作区绑定：每条两行（路径 + 删除 / 开场 + 收尾），窄面板也能放下
+    ".gs-ws-item{gap:4px;display:flex;flex-direction:column;margin-top:4px}",
     // 自检：结论按行排，全绿时加一条左侧绿边，一眼能看出"没事"
     ".gs-selfcheck{margin-top:8px;display:flex;flex-direction:column;gap:6px}",
     ".gs-selfcheck-lines{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:2px}",
@@ -988,7 +1036,8 @@ function normalizeCore(raw) {
     matchMode: matchMode,
     onlyAssistant: base.onlyAssistant !== false,
     legacyLines: sanitizeLegacyLines(base.legacyLines),
-    pool: sanitizePool(base.pool)
+    pool: sanitizePool(base.pool),
+    perWorkspace: sanitizeWorkspaceBindings(base.perWorkspace)
   };
 }
 
@@ -1427,6 +1476,29 @@ function renderLineText(line) {
   });
 }
 
+/**
+ * 取出"样式字段"（不含文案与图片），用于把一行的外观整包复制到另一行。
+ * @param line - 行配置。
+ * @returns {Object} 只含样式字段的补丁。
+ */
+function lineStyleSource(line) {
+  var out = {};
+  var keys = Object.keys(DEFAULT_LINE);
+  for (var i = 0; i < keys.length; i += 1) {
+    var key = keys[i];
+    if (key === "text" || key === "image") continue;
+    if (line[key] !== undefined) out[key] = line[key];
+  }
+  return out;
+}
+
+/**
+ * 渲染一行"开场/收尾"的样子（编辑器预览与输入框上方卡片共用）。
+ * @param line - 行配置。
+ * @param label - 前缀标签（预设小样卡传空串）。
+ * @param key - React key。
+ * @returns {Object} React 元素。
+ */
 function lineRender(line, label, key) {
   var children = [];
   if (typeof line.image === "string" && line.image.length > 0) {
@@ -1496,6 +1568,16 @@ function Editor() {
   var presetBoth = presetBothPair[0];
   var setPresetBoth = presetBothPair[1];
 
+  /** 图片拖拽悬停态（拖进来时给个虚线框反馈）。 */
+  var dragPair = React.useState(false);
+  var dragOver = dragPair[0];
+  var setDragOver = dragPair[1];
+
+  /** 上一次保存之前的配置（供「撤销上次保存」一键回退；null = 还没保存过）。 */
+  var revertPair = React.useState(null);
+  var revertConfig = revertPair[0];
+  var setRevertConfig = revertPair[1];
+
   /**
    * 套用一套外观预设：以 PRESET_BASE 打底再叠加这套预设，**文案与图片原样保留**。
    * 之所以要打底：预设只写它关心的字段，不打底的话你之前手调过的底色/边框会残留，
@@ -1515,6 +1597,16 @@ function Editor() {
     setSaved(false);
     setDraft(Object.assign({}, draft, patch));
     setNotice("已套用「" + preset.name + "」外观（文案与图片未改动），正在保存…");
+  }
+
+  /** 这套预设是不是当前行的外观（按预设自己声明的字段比对，用于高亮）。 */
+  function presetIsActive(preset) {
+    var style = Object.assign({}, PRESET_BASE, preset.style);
+    var keys = Object.keys(style);
+    for (var i = 0; i < keys.length; i += 1) {
+      if (line[keys[i]] !== style[keys[i]]) return false;
+    }
+    return true;
   }
 
   /** 导出当前配置为 JSON 文件（含图片短地址；分享给别人时对方能直接用）。 */
@@ -1672,6 +1764,8 @@ function Editor() {
     }
     setError("");
     setBusy(true);
+    // 记下"这次保存之前"的那份配置：保存成功后「撤销上次保存」就能一键回退。
+    var previous = store.config;
     // __client 只是给宿主日志留个可辨识的标记（宿主 normalize 会丢弃未知字段）。
     var body = Object.assign({}, payload, { __client: (auto === true ? "auto@" : "settings@") + Date.now() });
     saveConfig(body)
@@ -1681,6 +1775,7 @@ function Editor() {
         setFail(0);
         setDraft(next);
         setSaved(true);
+        setRevertConfig(previous);
         if (auto === true) setNotice("已自动保存 · 下一次回复即生效");
       })
       .catch(function (err) {
@@ -1765,15 +1860,22 @@ function Editor() {
    * 一个可折叠的分区卡片：标题行常驻，内容按需展开。
    * 高频分区默认展开（文本/字体/外观），低频分区默认收起（上下文提醒/旧文案/进度条/诊断），
    * 这样面板不再是一条需要来回滚的长龙。展开状态记在浏览器本地。
+   *
+   * 注意：children 是**可变参数**（可以传多个元素）。最后一项如果是个"普通对象"（不是 React 元素），
+   * 才当作 options —— 之前只支持一个 children，多传的内容会被静默当成 options 丢掉
+   * （2026-09-18 实测发现「外观样式」里的形状/填充/圆角/底色/边框/边色/阴影就是这么整块消失的）。
    * @param {string} title 标题。
    * @param {string} key 分区标识（同时是折叠状态与 React key）。
-   * @param {*} children 内容。
-   * @param {Object} [options] { summary 右侧摘要, defaultOpen 是否默认展开 }
+   * @param {...*} children 内容（可多个）。
    * @returns {Object} React 元素。
    */
-  function section(title, key, children, options) {
-    var opts = options === undefined ? {} : options;
+  function section(title, key) {
+    var rest = Array.prototype.slice.call(arguments, 2);
+    var last = rest.length > 0 ? rest[rest.length - 1] : undefined;
+    var hasOptions = last !== null && typeof last === "object" && !Array.isArray(last) && React.isValidElement(last) !== true;
+    var opts = hasOptions ? rest.pop() : {};
     var open = folds[key] !== undefined ? folds[key] === true : opts.defaultOpen !== false;
+    var children = rest.length === 1 ? rest[0] : rest;
     return React.createElement("div", { className: "gs-card", key: key, "data-gs-sec": key },
       React.createElement("div", {
         className: open ? "gs-fold gs-fold-open" : "gs-fold", role: "button", tabIndex: 0,
@@ -1897,6 +1999,53 @@ function Editor() {
   var sceneName = sceneNamePair[0];
   var setSceneName = sceneNamePair[1];
   var scenes = draft.scenes !== undefined && draft.scenes !== null ? draft.scenes : DEFAULTS.scenes;
+
+  /** 按工作区绑定：开关 + 绑定表。 */
+  var wsCfg = draft.perWorkspace !== undefined && draft.perWorkspace !== null ? draft.perWorkspace : DEFAULTS.perWorkspace;
+
+  /** 工作区绑定的字段补丁。 */
+  function patchWs(patch) {
+    patchTop({ perWorkspace: Object.assign({}, wsCfg, patch) });
+  }
+
+  /** 改一条绑定里的某个字段。 */
+  function patchWsItem(index, patch) {
+    var next = wsCfg.items.slice();
+    next[index] = Object.assign({}, next[index], patch);
+    patchWs({ items: next });
+  }
+
+  /**
+   * 从页面里猜一个工作区路径（DSH 的工作区条目通常把绝对路径放在 title 上）。
+   * 猜不到就返回空串，让用户自己填。
+   * @returns {string} 猜到的路径。
+   */
+  function guessWorkspacePath() {
+    if (typeof document === "undefined") return "";
+    var nodes = document.querySelectorAll("[title]");
+    for (var i = 0; i < nodes.length; i += 1) {
+      var title = nodes[i].getAttribute("title") || "";
+      var hit = /([A-Za-z]:\\[^"<>|\r\n]{1,180})/.exec(title);
+      if (hit !== null) return hit[1].trim();
+    }
+    return "";
+  }
+
+  /** 「填当前工作区」：猜一个路径填进(最后一条空路径 / 新加一条)。 */
+  function fillCurrentWorkspace() {
+    var guess = guessWorkspacePath();
+    if (guess === "") { setNotice("没在页面上找到工作区路径，手动填一下（例如 E:\\harness）"); return; }
+    var items = wsCfg.items.slice();
+    var blank = -1;
+    for (var i = 0; i < items.length; i += 1) {
+      if (String(items[i].path || "").trim() === "") { blank = i; break; }
+    }
+    if (blank >= 0) items[blank] = Object.assign({}, items[blank], { path: guess });
+    else if (items.length < WORKSPACE_MAX) items.push({ path: guess, greeting: "", signOff: "" });
+    else { setNotice("绑定已满 " + WORKSPACE_MAX + " 条：先删一条再加"); return; }
+    patchWs({ items: items });
+    setNotice("已填入工作区路径：" + guess + "（再写上这个项目专用的开场/收尾就生效）");
+  }
 
   /**
    * 跑一遍自检：把"样式没生效/数字不对/看着怪"这类问题一次问到底，
@@ -2076,6 +2225,30 @@ function Editor() {
             }, pair[0]);
           })
         ),
+        React.createElement("div", { className: "gs-inline", key: "copy-other" },
+          React.createElement("button", {
+            type: "button", className: "gs-btn",
+            title: "把这一行的文案复制到另一行（只复制文案，样式各留各的）",
+            onClick: function () {
+              var other = tab === "greeting" ? "signOff" : "greeting";
+              var patch = {};
+              patch[other] = Object.assign({}, draft[other], { text: line.text });
+              patchTop(patch);
+              setNotice("已把这句文案复制到" + (other === "greeting" ? "开场语" : "结束语"));
+            }
+          }, "文案复制到" + (tab === "greeting" ? "收尾" : "开场")),
+          React.createElement("button", {
+            type: "button", className: "gs-btn",
+            title: "把这一行的样式也复制到另一行（字号/颜色/形状/动效等，文案不动）",
+            onClick: function () {
+              var other = tab === "greeting" ? "signOff" : "greeting";
+              var patch = {};
+              patch[other] = Object.assign({}, draft[other], lineStyleSource(line));
+              patchTop(patch);
+              setNotice("已把这行的外观复制到" + (other === "greeting" ? "开场语" : "结束语"));
+            }
+          }, "外观复制到" + (tab === "greeting" ? "收尾" : "开场"))
+        ),
         React.createElement("div", { className: "gs-hint", key: "resolved" },
           "现在会解析成：" + (resolveTemplate(line.text, new Date()).replace(/\n/g, " ⏎ ") || "（空）")),
         React.createElement("div", { className: "gs-hint", key: "runtime-vars" },
@@ -2166,7 +2339,19 @@ function Editor() {
         sliderCell("速度", line.animSpeed, 1, 4, 1, "×", function (value) { setLine({ animSpeed: value }); }, "animSpeed"),
         React.createElement("div", { className: "gs-cell gs-cell-wide", key: "image" },
           React.createElement("span", { className: "gs-label" }, "图片"),
-          React.createElement("div", { className: "gs-cellgroup" },
+          React.createElement("div", {
+            className: dragOver ? "gs-cellgroup gs-dropzone gs-dropzone-on" : "gs-cellgroup gs-dropzone",
+            onDragOver: function (event) { event.preventDefault(); if (!dragOver) setDragOver(true); },
+            onDragLeave: function () { setDragOver(false); },
+            onDrop: function (event) {
+              event.preventDefault();
+              setDragOver(false);
+              var file = event.dataTransfer !== null && event.dataTransfer !== undefined && event.dataTransfer.files !== undefined
+                ? event.dataTransfer.files[0]
+                : null;
+              if (file) loadImage(file);
+            }
+          },
             React.createElement("input", {
               className: "gs-file", id: fileId + "-pick", type: "file",
               accept: "image/png,image/jpeg,image/gif,image/webp",
@@ -2185,7 +2370,7 @@ function Editor() {
                     type: "button", className: "gs-btn", onClick: function () { setLine({ image: "" }); }
                   }, "移除")
                 )
-              : React.createElement("span", { className: "gs-hint" }, "PNG / JPEG / GIF / WebP ≤300KB（只在页面显示）")
+              : React.createElement("span", { className: "gs-hint" }, "PNG / JPEG / GIF / WebP ≤300KB（也可直接把图片拖到这块里）")
           )
         ),
         sliderCell("图高", line.imageHeight, 12, 64, 1, "px", function (value) { setLine({ imageHeight: value }); }, "imageHeight"),
@@ -2220,18 +2405,27 @@ function Editor() {
       ])
     ),
     section("外观样式（形状 / 填充 / 边框 / 阴影，只影响页面显示）", "deco",
-      React.createElement("div", { className: "gs-presets", key: "presets" },
-        React.createElement("span", { className: "gs-label" }, "一键外观（" + STYLE_PRESETS.length + " 套）"),
+      // 一键外观改成"小样卡网格"：每张卡直接把当前文案按该预设渲染出来，挑起来不用靠名字猜。
+      React.createElement("div", { className: "gs-preset-grid", key: "presets" },
         STYLE_PRESETS.map(function (preset) {
+          var style = Object.assign({}, PRESET_BASE, preset.style);
+          var previewLine = Object.assign({}, line, style, { image: "", animation: "none" });
+          var active = presetIsActive(preset);
           return React.createElement("button", {
-            key: preset.id, type: "button", className: "gs-preset",
+            key: preset.id, type: "button",
+            className: active ? "gs-preset-card gs-preset-card-on" : "gs-preset-card",
             title: "套用「" + preset.name + "」的外观（文案与图片不动）",
             onClick: function () { applyPreset(preset); }
           },
-            React.createElement("span", { className: "gs-preset-dot", style: { background: preset.dot } }),
-            preset.name
+            React.createElement("span", { className: "gs-preset-card-head" },
+              React.createElement("span", { className: "gs-preset-dot", style: { background: preset.dot } }),
+              preset.name
+            ),
+            React.createElement("span", { className: "gs-preset-card-demo" }, lineRender(previewLine, "", "p-" + preset.id))
           );
-        }),
+        })
+      ),
+      React.createElement("div", { className: "gs-inline", key: "preset-actions" },
         React.createElement("button", {
           type: "button", className: presetBoth ? "gs-tab gs-tab-on" : "gs-tab",
           title: "开：一次改两行；关：只改当前标签页",
@@ -2241,7 +2435,8 @@ function Editor() {
           type: "button", className: "gs-btn",
           title: "把当前行的外观恢复成默认（文案与图片不动）",
           onClick: function () { applyPreset({ name: "默认外观", style: {} }); }
-        }, "恢复默认外观")
+        }, "恢复默认外观"),
+        React.createElement("span", { className: "gs-hint" }, "点卡片即套用；文案与图片不会被改")
       ),
       grid("deco-grid", [
         selectCell("形状", SHAPES, line.shape, function (value) {
@@ -2262,6 +2457,15 @@ function Editor() {
             title: "填充选「自定义底色」时生效",
             onChange: function (event) { setLine({ bgColor: event.target.value, fill: "solid" }); }
           }),
+          React.createElement("span", { className: "gs-swatches" },
+            COLORS.filter(function (color) { return color !== ""; }).map(function (color) {
+              return React.createElement("button", {
+                key: "bg-" + color, type: "button", className: "gs-swatch gs-swatch-mini",
+                style: { background: color }, title: "常用底色 " + color,
+                onClick: function () { setLine({ bgColor: color, fill: "solid" }); }
+              });
+            })
+          ),
           React.createElement("span", { className: "gs-hint" }, line.fill === "solid" ? "已启用" : "选「自定义底色」启用")
         ), "bgColor", true),
         sliderCell("边框", line.borderWidth, 0, 6, 1, "px", function (value) { setLine({ borderWidth: value }); }, "borderWidth"),
@@ -2272,6 +2476,15 @@ function Editor() {
             title: "边框为 0 时看不出效果",
             onChange: function (event) { setLine({ borderColor: event.target.value, borderWidth: line.borderWidth > 0 ? line.borderWidth : 1 }); }
           }),
+          React.createElement("span", { className: "gs-swatches" },
+            COLORS.filter(function (color) { return color !== ""; }).map(function (color) {
+              return React.createElement("button", {
+                key: "bd-" + color, type: "button", className: "gs-swatch gs-swatch-mini",
+                style: { borderColor: color }, title: "常用边框色 " + color,
+                onClick: function () { setLine({ borderColor: color, borderWidth: line.borderWidth > 0 ? line.borderWidth : 1 }); }
+              });
+            })
+          ),
           React.createElement("span", { className: "gs-hint" }, line.borderWidth > 0 ? "生效中" : "边框为 0")
         ), "borderColor", true),
         selectCell("阴影", SHADOWS, line.shadow, function (value) { setLine({ shadow: value }); }, "shadow"),
@@ -2320,6 +2533,61 @@ function Editor() {
           }),
           React.createElement("button", { type: "button", className: "gs-btn", onClick: saveScene }, "存成场景"),
           React.createElement("span", { className: "gs-hint" }, "最多 " + SCENES_MAX + " 个 · 当前 " + scenes.items.length + " 个")
+        ),
+        // 按工作区自动换文案：与场景同属"什么时候用哪套文案"，所以放在同一个分区里。
+        React.createElement("div", { className: "gs-pool" },
+          React.createElement("div", { className: "gs-inline gs-pool-head" },
+            React.createElement("label", { className: "gs-inline" },
+              React.createElement("input", {
+                type: "checkbox", checked: wsCfg.enabled === true,
+                onChange: function (event) { patchWs({ enabled: event.target.checked }); }
+              }),
+              React.createElement("span", { className: "gs-label" }, "按工作区自动换文案（切到哪个项目就用它的开场/收尾）")
+            ),
+            React.createElement("span", { className: "gs-hint" }, wsCfg.items.length + " 条")
+          ),
+          React.createElement("div", { className: "gs-hint" },
+            "路径按目录前缀匹配（不区分大小写、斜杠随便写），多条命中取路径最长的那条。优先级：工作区绑定 > 文案池 > 固定文案。"),
+          wsCfg.items.map(function (item, index) {
+            return React.createElement("div", { className: "gs-ws-item", key: "ws-" + index },
+              React.createElement("div", { className: "gs-inline" },
+                React.createElement("input", {
+                  className: "gs-input", style: { flex: "1 1 auto", minWidth: 120 }, value: item.path,
+                  placeholder: "工作区路径，如 E:\\harness",
+                  onChange: function (event) { patchWsItem(index, { path: event.target.value }); }
+                }),
+                React.createElement("button", {
+                  type: "button", className: "gs-btn",
+                  onClick: function () { patchWs({ items: wsCfg.items.filter(function (one, i) { return i !== index; }) }); }
+                }, "删除")
+              ),
+              React.createElement("div", { className: "gs-inline" },
+                React.createElement("input", {
+                  className: "gs-input", style: { flex: "1 1 0", minWidth: 100 }, value: item.greeting,
+                  placeholder: "这个项目的开场（留空则不分工作区）",
+                  onChange: function (event) { patchWsItem(index, { greeting: event.target.value }); }
+                }),
+                React.createElement("input", {
+                  className: "gs-input", style: { flex: "1 1 0", minWidth: 100 }, value: item.signOff,
+                  placeholder: "这个项目的收尾（可留空）",
+                  onChange: function (event) { patchWsItem(index, { signOff: event.target.value }); }
+                })
+              )
+            );
+          }),
+          React.createElement("div", { className: "gs-inline" },
+            React.createElement("button", {
+              type: "button", className: "gs-btn",
+              onClick: function () {
+                if (wsCfg.items.length >= WORKSPACE_MAX) { setNotice("最多 " + WORKSPACE_MAX + " 条：先删一条再加"); return; }
+                patchWs({ items: wsCfg.items.concat([{ path: "", greeting: "", signOff: "" }]) });
+              }
+            }, "+ 添加一条工作区"),
+            React.createElement("button", {
+              type: "button", className: "gs-btn", title: "从页面里找当前工作区路径填进去",
+              onClick: fillCurrentWorkspace
+            }, "填当前工作区")
+          )
         )
       ),
       {
@@ -2504,6 +2772,18 @@ function Editor() {
       type: "button", className: "gs-btn gs-btn-on",
       onClick: function () { commit(draft); }
     }, busy ? "正在保存…" : "保存并生效"),
+    React.createElement("button", {
+      type: "button", className: "gs-btn",
+      disabled: revertConfig === null,
+      title: revertConfig === null ? "还没保存过，没得撤销" : "回到上一次保存之前的那份配置",
+      onClick: function () {
+        if (revertConfig === null) return;
+        var back = revertConfig;
+        setRevertConfig(null);
+        commit(back, false);
+        setNotice("已撤销上一次保存");
+      }
+    }, "撤销上次保存"),
     React.createElement("button", {
       type: "button", className: "gs-btn",
       onClick: function () { commit(DEFAULTS); }
@@ -3286,6 +3566,17 @@ function installChatStyler(ctx) {
         var poolCompiled = compileWantedLine(pair[0], poolText, now);
         for (var q = 0; q < poolCompiled.length; q += 1) list.push(poolCompiled[q]);
       }
+      // 按工作区绑定的文案：页面不知道当前是哪个工作区，但匹配是"逐字相等"，把全部绑定文案都当候选最稳。
+      var wsCfg = state.config.perWorkspace;
+      var wsList = wsCfg !== undefined && wsCfg.enabled === true && Array.isArray(wsCfg.items) ? wsCfg.items : [];
+      for (var w = 0; w < wsList.length; w += 1) {
+        var wsText = wsList[w] !== null && typeof wsList[w] === "object" && typeof wsList[w][pair[0]] === "string"
+          ? wsList[w][pair[0]].trim()
+          : "";
+        if (wsText.length === 0 || wsText === text) continue;
+        var wsCompiled = compileWantedLine(pair[0], wsText, now);
+        for (var v = 0; v < wsCompiled.length; v += 1) list.push(wsCompiled[v]);
+      }
     });
     // 旧文案兼容表：只参与页面匹配渲染，不写进提示词（模型看不到）
     var legacy = state.config.legacyLines;
@@ -3986,6 +4277,9 @@ module.exports = {
     sanitizePool: sanitizePool,
     sanitizePoolList: sanitizePoolList,
     sanitizeScenes: sanitizeScenes,
+    sanitizeWorkspaceBindings: sanitizeWorkspaceBindings,
+    pathKey: pathKey,
+    lineStyleSource: lineStyleSource,
     normalizeCore: normalizeCore,
     runtimeVarRegex: runtimeVarRegex,
     findComposerEl: findComposerEl,

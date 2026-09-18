@@ -87,3 +87,42 @@ test('宿主半：normalize 保留并清洗 pool 字段', () => {
   const bare = h.normalize({})
   assert.deepEqual(bare.pool, { enabled: false, mode: 'random', greeting: [], signOff: [] })
 })
+
+test('宿主半：按工作区绑定文案（匹配、最长前缀、优先级）', () => {
+  const bindings = h.sanitizeWorkspaceBindings({
+    enabled: true,
+    items: [
+      { path: 'E:\\harness', greeting: '干活开场', signOff: '干活收尾' },
+      { path: 'E:\\harness\\dsh-plugins', greeting: '插件开场', signOff: '' },
+      { path: '', greeting: '空路径', signOff: '' },              // 丢
+      { path: 'D:\\nothing', greeting: '', signOff: '' },          // 两行都空 → 丢
+    ],
+  })
+  assert.equal(bindings.items.length, 2)
+  // 路径大小写/斜杠/末尾分隔符都不影响匹配
+  assert.equal(h.matchWorkspaceBinding(bindings, 'e:/HARNESS/').path, 'E:\\harness')
+  // 更长的前缀优先
+  assert.equal(h.matchWorkspaceBinding(bindings, 'E:\\harness\\dsh-plugins\\x').path, 'E:\\harness\\dsh-plugins')
+  // 目录边界：不相干路径不命中
+  assert.equal(h.matchWorkspaceBinding(bindings, 'E:\\harness2'), undefined)
+  assert.equal(h.matchWorkspaceBinding(bindings, undefined), undefined)
+  // 关掉开关就不命中
+  assert.equal(h.matchWorkspaceBinding({ enabled: false, items: bindings.items }, 'E:\\harness'), undefined)
+
+  // 优先级：工作区绑定 > 文案池 > 固定文案
+  const base = h.normalize({
+    greeting: { text: '固定开场' },
+    signOff: { text: '固定收尾' },
+    pool: { enabled: true, mode: 'sequence', greeting: ['池子开场'], signOff: ['池子收尾'] },
+    perWorkspace: { enabled: true, items: [{ path: 'E:\\harness', greeting: '干活开场', signOff: '' }] },
+  })
+  const stats = { rounds: 0, lastMs: 0, lastTokens: 0, lastModel: '', lastAt: 0 }
+  // 命中工作区：开场用绑定；收尾绑定是空的 → 回落文案池
+  const atHarness = h.ruleTextWith(base, stats, 'E:\\harness')
+  assert.match(atHarness, /原样开头：干活开场/)
+  assert.match(atHarness, /原样结尾：池子收尾/)
+  // 不命中工作区：两行都用文案池
+  const elsewhere = h.ruleTextWith(base, stats, 'D:\\other')
+  assert.match(elsewhere, /原样开头：池子开场/)
+  assert.match(elsewhere, /原样结尾：池子收尾/)
+})

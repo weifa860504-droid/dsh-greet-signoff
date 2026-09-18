@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.9.0'
+const HOST_VERSION = '1.10.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -134,6 +134,8 @@ const DEFAULT_CONFIG = {
   pool: { enabled: false, mode: 'random', greeting: [], signOff: [] },
   /** 场景：整份配置的快照，用于"工作 / 生活 / 深夜"一键整体切换。 */
   scenes: { active: '', items: [] },
+  /** 按工作区自动换文案：命中当前会话的工作目录时，用这一条的文案（优先级最高）。 */
+  perWorkspace: { enabled: false, items: [] },
 }
 
 /** 一句池子文案的清洗：去首尾空白、丢掉空行、截到上限。 */
@@ -325,6 +327,58 @@ const SCENES_MAX = 8
 const SCENE_NAME_MAX = 24
 const SCENE_ID_RE = /^[a-z0-9][a-z0-9-]{0,15}$/
 
+/** 按工作区绑定：最多几条、路径多长。 */
+const WORKSPACE_MAX = 8
+const WORKSPACE_PATH_MAX = 260
+
+/** 路径归一：Windows 下不区分大小写、斜杠统一、去掉末尾分隔符。 */
+function pathKey(value) {
+  return String(value ?? '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+}
+
+/**
+ * 清洗"按工作区绑定文案"表：路径为空、开场与收尾都空的条目直接丢掉。
+ * @param {unknown} raw 原始字段。
+ * @returns {{enabled: boolean, items: Array<{path: string, greeting: string, signOff: string}>}} 清洗后的绑定表。
+ */
+function sanitizeWorkspaceBindings(raw) {
+  const src = raw !== null && typeof raw === 'object' ? raw : {}
+  const list = Array.isArray(src.items) ? src.items : []
+  const items = []
+  for (const item of list) {
+    if (item === null || typeof item !== 'object') continue
+    const path = typeof item.path === 'string' ? item.path.trim().slice(0, WORKSPACE_PATH_MAX) : ''
+    if (path.length === 0) continue
+    const greeting = typeof item.greeting === 'string' ? item.greeting.trim().slice(0, TEXT_LIMIT) : ''
+    const signOff = typeof item.signOff === 'string' ? item.signOff.trim().slice(0, TEXT_LIMIT) : ''
+    if (greeting.length === 0 && signOff.length === 0) continue
+    items.push({ path, greeting, signOff })
+    if (items.length >= WORKSPACE_MAX) break
+  }
+  return { enabled: src.enabled === true, items }
+}
+
+/**
+ * 找出与当前工作目录匹配的绑定：路径相等或以它开头（按目录边界），多条命中取**最长**的那条。
+ * @param {object} bindings 绑定表。
+ * @param {string|undefined} cwd 当前会话的工作目录。
+ * @returns {{path: string, greeting: string, signOff: string}|undefined} 命中的绑定。
+ */
+function matchWorkspaceBinding(bindings, cwd) {
+  if (bindings === undefined || bindings === null || bindings.enabled !== true) return undefined
+  if (typeof cwd !== 'string' || cwd.length === 0) return undefined
+  const target = pathKey(cwd)
+  let best
+  for (const item of bindings.items ?? []) {
+    const key = pathKey(item.path)
+    if (key.length === 0) continue
+    const hit = target === key || target.indexOf(`${key}\\`) === 0
+    if (!hit) continue
+    if (best === undefined || key.length > pathKey(best.path).length) best = item
+  }
+  return best
+}
+
 /**
  * 清洗场景表。每个场景存的是"保存那一刻的整份配置"（不含 scenes 自身，避免自我嵌套）。
  * 坏数据一律丢掉，绝不因为一个场景写坏而让整份配置读不出来。
@@ -392,6 +446,7 @@ function normalizeCore(raw) {
     onlyAssistant: base.onlyAssistant !== false,
     legacyLines: sanitizeLegacyLines(base.legacyLines),
     pool: sanitizePool(base.pool),
+    perWorkspace: sanitizeWorkspaceBindings(base.perWorkspace),
   }
 }
 
@@ -551,8 +606,11 @@ const poolTicks = { greeting: 0, signOff: 0 }
  * @param {Date} now 当前时间（动态变量用）。
  * @returns {string} 本轮要用的那一句（可能为空串）。
  */
-function pickLine(config, kind, now, stats) {
+function pickLine(config, kind, now, stats, binding) {
   const at = now instanceof Date ? now : new Date()
+  // 工作区绑定最具体：命中且这一行有内容时直接用它（优先级高于文案池与固定文案）。
+  const bound = binding !== undefined && binding !== null && typeof binding[kind] === 'string' ? binding[kind].trim() : ''
+  if (bound.length > 0) return resolveRuntimeVars(resolveTemplate(bound, at), stats).trim()
   const fixed = resolveRuntimeVars(resolveTemplate(String((config[kind] ?? {}).text ?? ''), at), stats).trim()
   const pool = config.pool ?? {}
   if (pool.enabled !== true) return fixed
@@ -642,14 +700,17 @@ function currentSessionIdInfo() {
     const agents = pluginCtx === null ? undefined : pluginCtx.get('agents')
     const agent = agents === undefined || agents === null ? undefined : agents.currentInitiator()
     if (agent !== undefined && agent !== null) {
-      if (typeof agent.id === 'string' && agent.id.length > 0) return { id: agent.id, exact: true }
       const session = agent.session
+      const cwd = session !== undefined && session !== null && session.header !== undefined
+        ? (typeof session.header.cwd === 'string' ? session.header.cwd : undefined)
+        : undefined
+      if (typeof agent.id === 'string' && agent.id.length > 0) return { id: agent.id, exact: true, cwd }
       if (session !== undefined && session !== null && typeof session.id === 'string' && session.id.length > 0) {
-        return { id: session.id, exact: true }
+        return { id: session.id, exact: true, cwd }
       }
     }
   } catch (error) { /* 服务形态变了就退回兜底 */ }
-  return { id: lastStatsSessionId, exact: false }
+  return { id: lastStatsSessionId, exact: false, cwd: undefined }
 }
 
 /**
@@ -693,8 +754,9 @@ async function* trackStream(source, sessionId, options) {
  */
 function ruleText() {
   const config = readConfig()
-  const stats = statsFor(currentSessionIdInfo().id)
-  return ruleTextWith(config, stats)
+  const info = currentSessionIdInfo()
+  const stats = statsFor(info.id)
+  return ruleTextWith(config, stats, info.cwd)
 }
 
 function sendJson(res, status, value) {
@@ -739,16 +801,24 @@ function handleApi(req, res) {
     return
   }
   // /api/greet-signoff/rule-text → 自检用：现在这一刻模型会看到的规则文本（含运行时变量解析结果）
+  // 带 ?cwd=<路径> 时用这个路径代替会话工作目录，用来验证"按工作区换文案"到底命中了没有。
   if (pathname === `${API_PATH}/rule-text`) {
+    const rawUrl = String(req.url ?? '')
+    const cwdMatch = /[?&]cwd=([^&]*)/.exec(rawUrl)
     const info = currentSessionIdInfo()
+    const cwd = cwdMatch === null ? info.cwd : decodeURIComponent(cwdMatch[1])
     const stats = statsFor(info.id)
+    const config = readConfig()
+    const binding = matchWorkspaceBinding(config.perWorkspace, cwd)
     sendJson(res, 200, {
       ok: true,
       hostVersion: HOST_VERSION,
       sessionId: info.id ?? null,
       exactSession: info.exact,
+      cwd: cwd ?? null,
+      bindingPath: binding === undefined ? null : binding.path,
       stats: stats === undefined ? null : { rounds: stats.rounds, lastMs: stats.lastMs, lastTokens: stats.lastTokens, lastModel: stats.lastModel },
-      text: ruleText(),
+      text: ruleTextWith(config, stats, cwd),
     })
     return
   }
@@ -829,16 +899,20 @@ export const __test = {
   sanitizePoolList,
   sanitizeScenes,
   scenesOf,
+  sanitizeWorkspaceBindings,
+  matchWorkspaceBinding,
+  pathKey,
   normalize,
   normalizeCore,
   ruleTextWith,
 }
 
-/** 自检/单测用：给定配置与统计，算出模型会看到的规则文本。 */
-function ruleTextWith(config, stats) {
+/** 自检/单测用：给定配置、统计与工作目录，算出模型会看到的规则文本。 */
+function ruleTextWith(config, stats, cwd) {
   const now = new Date()
-  const greeting = pickLine(config, 'greeting', now, stats).trim()
-  const signOff = pickLine(config, 'signOff', now, stats).trim()
+  const binding = matchWorkspaceBinding(config.perWorkspace, cwd)
+  const greeting = pickLine(config, 'greeting', now, stats, binding).trim()
+  const signOff = pickLine(config, 'signOff', now, stats, binding).trim()
   if (greeting.length === 0 && signOff.length === 0) return ''
   const lines = ['开场与收尾（本会话强制要求 / mandatory for every reply）：']
   if (greeting.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样开头：${greeting}`)
