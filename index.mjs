@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.6.1'
+const HOST_VERSION = '1.7.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -73,6 +73,11 @@ const CAPS = ['none', 'upper', 'lower']
 const WEIGHTS = [400, 500, 600, 700, 800]
 /** 匹配模式（与浏览器半保持同一套取值）。 */
 const MATCH_MODES = ['exact', 'loose', 'fuzzy']
+
+/** 文案池：最多几句、每句多长、两种挑法。 */
+const POOL_MAX = 20
+const POOL_LINE_MAX = 200
+const POOL_MODES = ['random', 'sequence']
 /** 颜色字段只允许 #rgb / #rrggbb / #rrggbbaa，避免任意字符串进样式。 */
 const COLOR_RE = /^#[0-9a-fA-F]{3,8}$/
 
@@ -122,6 +127,36 @@ const DEFAULT_CONFIG = {
   onlyAssistant: true,
   /** 旧文案兼容表：只影响页面渲染，不写进提示词。 */
   legacyLines: [],
+  /**
+   * 文案池：开启后每次回复从池子里挑一句（随机或按顺序轮换），不再固定用 greeting.text / signOff.text。
+   * 某一行的池子为空时，那一行仍然用固定文案 —— 这样"只想让开场语轮换"也能用。
+   */
+  pool: { enabled: false, mode: 'random', greeting: [], signOff: [] },
+}
+
+/** 一句池子文案的清洗：去首尾空白、丢掉空行、截到上限。 */
+function sanitizePoolList(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const text = item.trim()
+    if (text.length === 0) continue
+    out.push(text.length > POOL_LINE_MAX ? text.slice(0, POOL_LINE_MAX) : text)
+    if (out.length >= POOL_MAX) break
+  }
+  return out
+}
+
+/** 文案池字段清洗（未知模式一律回到随机）。 */
+function sanitizePool(raw) {
+  const src = raw !== null && typeof raw === 'object' ? raw : {}
+  return {
+    enabled: src.enabled === true,
+    mode: pickEnum(src.mode, POOL_MODES, 'random'),
+    greeting: sanitizePoolList(src.greeting),
+    signOff: sanitizePoolList(src.signOff),
+  }
 }
 
 function clampInt(value, min, max, fallback) {
@@ -302,6 +337,7 @@ function normalize(raw) {
     matchMode,
     onlyAssistant: base.onlyAssistant !== false,
     legacyLines: sanitizeLegacyLines(base.legacyLines),
+    pool: sanitizePool(base.pool),
   }
 }
 
@@ -449,15 +485,44 @@ function resolveTemplate(text, now) {
 }
 
 /**
+ * 文案池的轮换游标。只在进程内累计就够用 —— 轮换的目的是"别老重复"，不需要跨重启精确。
+ */
+const poolTicks = { greeting: 0, signOff: 0 }
+
+/**
+ * 本轮某一行的文案：文案池启用且这一行有内容时，从池子里挑一句；否则用固定文案。
+ * 池子里的句子和固定文案走同一套动态变量解析，所以模型与页面看到的是同一句。
+ * @param {object} config 已归一化的配置。
+ * @param {'greeting'|'signOff'} kind 哪一行。
+ * @param {Date} now 当前时间（动态变量用）。
+ * @returns {string} 本轮要用的那一句（可能为空串）。
+ */
+function pickLine(config, kind, now) {
+  const fixed = resolveTemplate(String((config[kind] ?? {}).text ?? ''), now).trim()
+  const pool = config.pool ?? {}
+  if (pool.enabled !== true) return fixed
+  const raw = Array.isArray(pool[kind]) ? pool[kind] : []
+  const list = raw.map((item) => resolveTemplate(item, now).trim()).filter((item) => item.length > 0)
+  if (list.length === 0) return fixed
+  if (pool.mode === 'sequence') {
+    const index = poolTicks[kind] % list.length
+    poolTicks[kind] = index + 1
+    return list[index]
+  }
+  return list[Math.floor(Math.random() * list.length)]
+}
+
+/**
  * 模型可见的规则文本；两行的文本都为空时返回空串（该段不渲染）。
  * 图片与字号/颜色/动效只影响页面呈现，因此不进入提示词。
  * 动态变量在这里就解析成具体文字，模型与页面看到的是同一句（页面在渲染时也按同一规则解析）。
+ * 文案池开启时，每次组装提示都会重新挑一句 —— 于是"每轮换一句"。
  */
 function ruleText() {
   const config = readConfig()
   const now = new Date()
-  const greeting = resolveTemplate(config.greeting.text, now).trim()
-  const signOff = resolveTemplate(config.signOff.text, now).trim()
+  const greeting = pickLine(config, 'greeting', now).trim()
+  const signOff = pickLine(config, 'signOff', now).trim()
   if (greeting.length === 0 && signOff.length === 0) return ''
   const lines = ['开场与收尾（本会话强制要求 / mandatory for every reply）：']
   if (greeting.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样开头：${greeting}`)

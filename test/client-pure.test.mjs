@@ -246,3 +246,23 @@ test('isReconnectStuckText：只认连接异常提示，不误伤正文', () => 
   assert.equal(t.isReconnectStuckText(''), false)
   assert.equal(t.isReconnectStuckText(undefined), false)
 })
+
+test('sanitizePool / sanitizePoolList：文案池清洗', () => {
+  // 去空白、丢空行、按行保留
+  assert.deepEqual(t.sanitizePoolList([' 甲 ', '', '   ', '乙']), ['甲', '乙'])
+  assert.deepEqual(t.sanitizePoolList('不是数组'), [])
+  assert.deepEqual(t.sanitizePoolList([1, null, '丙']), ['丙'])
+  // 超长截断到 200
+  const long = 'x'.repeat(260)
+  assert.equal(t.sanitizePoolList([long])[0].length, 200)
+  // 最多 20 句
+  const many = Array.from({ length: 30 }, (_, i) => '第' + i + '句')
+  assert.equal(t.sanitizePoolList(many).length, 20)
+  // 整体字段：未知模式回落 random，enabled 只认 true
+  const pool = t.sanitizePool({ enabled: 'yes', mode: 'weird', greeting: ['甲'], signOff: [] })
+  assert.equal(pool.enabled, false)
+  assert.equal(pool.mode, 'random')
+  assert.deepEqual(pool.greeting, ['甲'])
+  assert.deepEqual(t.sanitizePool(undefined), { enabled: false, mode: 'random', greeting: [], signOff: [] })
+  assert.equal(t.sanitizePool({ enabled: true, mode: 'sequence' }).mode, 'sequence')
+})

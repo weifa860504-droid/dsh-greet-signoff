@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.6.3";
+var CLIENT_VERSION = "1.7.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -564,18 +564,58 @@ var DEFAULTS = {
   criticalPercent: 85,
   matchMode: "loose",
   onlyAssistant: true,
-  legacyLines: []
+  legacyLines: [],
+  // 文案池：池子非空且开关打开时，每次回复从池子里挑一句（挑的动作在宿主半，页面只负责把池子里每一句都贴上样式）。
+  pool: { enabled: false, mode: "random", greeting: [], signOff: [] }
 };
+
+/** 文案池：最多几句、每句多长、两种挑法（与宿主半保持一致）。 */
+var POOL_MAX = 20;
+var POOL_LINE_MAX = 200;
+var POOL_MODES = ["random", "sequence"];
+
+/**
+ * 清洗池子文案列表：去首尾空白、丢掉空行、截断超长、最多 POOL_MAX 句。
+ * @param raw - 任意输入。
+ * @returns {string[]} 清洗后的句子（一行一句）。
+ */
+function sanitizePoolList(raw) {
+  if (!Array.isArray(raw)) return [];
+  var out = [];
+  for (var i = 0; i < raw.length; i += 1) {
+    if (typeof raw[i] !== "string") continue;
+    var text = raw[i].trim();
+    if (text.length === 0) continue;
+    out.push(text.length > POOL_LINE_MAX ? text.slice(0, POOL_LINE_MAX) : text);
+    if (out.length >= POOL_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * 清洗文案池字段。
+ * @param raw - 任意输入。
+ * @returns {Object} { enabled, mode, greeting, signOff }。
+ */
+function sanitizePool(raw) {
+  var src = raw !== null && typeof raw === "object" ? raw : {};
+  return {
+    enabled: src.enabled === true,
+    mode: pickEnum(src.mode, POOL_MODES, "random"),
+    greeting: sanitizePoolList(src.greeting),
+    signOff: sanitizePoolList(src.signOff)
+  };
+}
 
 /* ─── 样式 ────────────────────────────────────────────────────────────── */
 
 function css() {
   return [
-    ".gs-panel{box-sizing:border-box;width:100%;padding:0 0 58px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
+    ".gs-panel{box-sizing:border-box;width:100%;padding:0 0 74px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
     /* ── 新版布局：吸顶头部（标签页 + 实时预览）+ 可折叠分区卡片 ── */
     // 预览跟着滚动吸在顶上，改下面的参数时不用滚回去看效果。
     ".gs-stickyhead{position:sticky;top:-2px;z-index:6;padding:10px 0 8px;background:var(--dsw-alias-bg-base);box-shadow:0 6px 10px -8px rgba(0,0,0,.28)}",
-    ".gs-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);margin-top:10px;overflow:hidden}",
+    ".gs-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);margin-top:10px;overflow:hidden;scroll-margin-top:196px}",
     ".gs-card>.gs-fold{padding:10px 12px}",
     ".gs-card>.gs-fold-open{border-bottom:1px solid var(--dsw-alias-border-l2)}",
     ".gs-fold-body{padding:4px 12px 12px}",
@@ -618,6 +658,15 @@ function css() {
     ".gs-btn-on:hover:not(:disabled){border-color:transparent;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1);opacity:.86}",
     ".gs-saved{margin-left:auto;color:var(--dsw-alias-label-tertiary);font-size:12px}",
     ".gs-tabs{gap:6px;display:flex}",
+    // 顶部快速跳转条：7 个分区一键展开并跳过去 + 全部展开/收起（不用在一堆折叠卡片里翻）。
+    ".gs-quicknav{gap:6px;flex-wrap:wrap;display:flex;margin-top:6px;align-items:center}",
+    ".gs-chip{height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:22px;cursor:pointer}",
+    ".gs-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+    ".gs-quicknav-gap{margin-left:auto}",
+    // 文案池：与上面的固定文案用一条虚线分开，视觉上属于"这一行的进阶用法"。
+    ".gs-pool{margin-top:10px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l2);flex-direction:column;gap:6px;display:flex}",
+    ".gs-pool-head{justify-content:space-between;width:100%}",
+    ".gs-pool-text{min-height:70px}",
     ".gs-tab{height:26px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}",
     ".gs-tab-on{border-color:transparent;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1)}",
     ".gs-mark{height:30px;min-width:36px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:0 0;color:var(--dsw-alias-label-primary);font-size:17px;line-height:1;cursor:pointer}",
@@ -882,7 +931,8 @@ function normalize(raw) {
     criticalPercent: Math.max(warn + 1, critical),
     matchMode: matchMode,
     onlyAssistant: base.onlyAssistant !== false,
-    legacyLines: sanitizeLegacyLines(base.legacyLines)
+    legacyLines: sanitizeLegacyLines(base.legacyLines),
+    pool: sanitizePool(base.pool)
   };
 }
 
@@ -1193,6 +1243,17 @@ function validate(draft) {
 var FOLD_DEFAULTS = { text: true, font: true, deco: true, alert: false, legacy: false, bar: false, diag: false };
 var FOLD_KEY = "gs.signoff.folds";
 
+/** 顶部快速跳转条：顺序就是面板里的顺序（标签短一点，一行放得下）。 */
+var SECTION_NAV = [
+  { key: "text", label: "文案" },
+  { key: "font", label: "字体" },
+  { key: "deco", label: "外观" },
+  { key: "alert", label: "提醒" },
+  { key: "bar", label: "进度条" },
+  { key: "legacy", label: "旧文案" },
+  { key: "diag", label: "诊断" }
+];
+
 /** 读取分区展开状态（浏览器本地；读不到就用默认）。 */
 function readFoldState() {
   var out = Object.assign({}, FOLD_DEFAULTS);
@@ -1456,6 +1517,32 @@ function Editor() {
   }
 
   /**
+   * 一次性展开/收起所有分区（状态照旧记在浏览器本地）。
+   * @param open - true 全部展开，false 全部收起。
+   */
+  function setAllFolds(open) {
+    var next = Object.assign({}, folds);
+    Object.keys(FOLD_DEFAULTS).forEach(function (key) { next[key] = open === true; });
+    setFolds(next);
+    writeFoldState(next);
+  }
+
+  /**
+   * 跳到某个分区：先把它展开，再滚到视野里（卡片有 scroll-margin-top，不会被吸顶预览挡住）。
+   * @param key - 分区标识。
+   */
+  function jumpToSection(key) {
+    var next = Object.assign({}, folds);
+    next[key] = true;
+    setFolds(next);
+    writeFoldState(next);
+    window.setTimeout(function () {
+      var el = document.querySelector('[data-gs-sec="' + key + '"]');
+      if (el !== null && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 60);
+  }
+
+  /**
    * 插入一个表情：追加到输入框尾部（不改写已有内容），并记入"最近用过"。
    * @param {string} emoji 要插入的表情字符。
    */
@@ -1630,7 +1717,7 @@ function Editor() {
   function section(title, key, children, options) {
     var opts = options === undefined ? {} : options;
     var open = folds[key] !== undefined ? folds[key] === true : opts.defaultOpen !== false;
-    return React.createElement("div", { className: "gs-card", key: key },
+    return React.createElement("div", { className: "gs-card", key: key, "data-gs-sec": key },
       React.createElement("div", {
         className: open ? "gs-fold gs-fold-open" : "gs-fold", role: "button", tabIndex: 0,
         onClick: function () { toggleFold(key); },
@@ -1680,6 +1767,17 @@ function Editor() {
 
   var fileId = fileIdRef.current;
 
+  /** 文案池：开关两行共用，池子内容各存各的；这里只读当前标签页那一行。 */
+  var poolCfg = draft.pool !== undefined && draft.pool !== null ? draft.pool : DEFAULTS.pool;
+  var poolKind = tab === "signOff" ? "signOff" : "greeting";
+  var poolText = Array.isArray(poolCfg[poolKind]) ? poolCfg[poolKind].join("\n") : "";
+  var poolSize = (Array.isArray(poolCfg.greeting) ? poolCfg.greeting.length : 0) + (Array.isArray(poolCfg.signOff) ? poolCfg.signOff.length : 0);
+
+  /** 文案池的字段补丁（开关、模式、某一行句子）。 */
+  function patchPool(patch) {
+    patchTop({ pool: Object.assign({}, poolCfg, patch) });
+  }
+
   var body = [
     // 顶部：标签页 + 状态 + 实时预览，一起吸顶。这样往下调参数时预览始终可见，
     // 不用"滚下去改完再滚回来看"。
@@ -1695,6 +1793,24 @@ function Editor() {
         }, "结束语"),
         React.createElement("span", { className: "gs-saved" },
           busy ? "正在保存…" : saved ? "已保存 · 下一次回复即生效" : touched ? "有未保存的改动" : "")
+      ),
+      React.createElement("div", { className: "gs-quicknav", key: "quicknav" },
+        SECTION_NAV.map(function (item) {
+          return React.createElement("button", {
+            key: item.key, type: "button", className: "gs-chip",
+            title: "跳到「" + item.label + "」并展开",
+            onClick: function () { jumpToSection(item.key); }
+          }, item.label);
+        }),
+        React.createElement("span", { className: "gs-quicknav-gap" }),
+        React.createElement("button", {
+          type: "button", className: "gs-chip", title: "展开全部分区",
+          onClick: function () { setAllFolds(true); }
+        }, "全部展开"),
+        React.createElement("button", {
+          type: "button", className: "gs-chip", title: "收起全部分区",
+          onClick: function () { setAllFolds(false); }
+        }, "全部收起")
       ),
       React.createElement("div", { className: "gs-preview", key: "preview" },
         React.createElement("div", { className: "gs-label" }, "实时预览（两行都显示，正在编辑的那行高亮）"),
@@ -1792,7 +1908,60 @@ function Editor() {
         React.createElement("div", {
           className: "gs-hint",
           title: "点「全部表情」展开全部可显示表情（" + emojiTotalLabel() + "），可用中文名搜索（如「皇冠」「鞭炮」「钱包」）。也可以直接用系统表情面板：Win + ." + (EMOJI_SCAN.blank > 0 ? " 已自动隐藏 " + EMOJI_SCAN.blank + " 个本机字体没有字形的表情。" : "")
-        }, "常用表情在上面，点「全部表情」可搜索全部 " + emojiTotalLabel() + "（Win + . 也能调系统面板）")
+        }, "常用表情在上面，点「全部表情」可搜索全部 " + emojiTotalLabel() + "（Win + . 也能调系统面板）"),
+        // 文案池：让这一行"每轮换一句"。
+        React.createElement("div", { className: "gs-pool", key: "pool" },
+          React.createElement("div", { className: "gs-inline gs-pool-head" },
+            React.createElement("label", { className: "gs-inline" },
+              React.createElement("input", {
+                type: "checkbox", checked: poolCfg.enabled === true,
+                onChange: function (event) { patchPool({ enabled: event.target.checked }); }
+              }),
+              React.createElement("span", { className: "gs-label" }, "文案池：让" + (poolKind === "signOff" ? "收尾" : "开场") + "每轮换一句")
+            ),
+            React.createElement("span", { className: "gs-inline" },
+              React.createElement("select", {
+                className: "gs-input gs-select", style: { width: 124, flex: "none" },
+                value: poolCfg.mode, disabled: poolCfg.enabled !== true,
+                onChange: function (event) { patchPool({ mode: event.target.value }); }
+              },
+                React.createElement("option", { value: "random" }, "随机挑一句"),
+                React.createElement("option", { value: "sequence" }, "按顺序轮换")
+              ),
+              React.createElement("span", { className: "gs-hint" }, "共 " + poolSize + " 句 · 开关两行共用")
+            )
+          ),
+          React.createElement("textarea", {
+            className: "gs-textarea gs-pool-text", value: poolText,
+            placeholder: "一行一句（最多 " + POOL_MAX + " 句）。留空则这一行继续用上面的固定文案。",
+            onChange: function (event) {
+              var patch = {};
+              patch[poolKind] = event.target.value.split("\n");
+              patchPool(patch);
+            }
+          }),
+          React.createElement("div", { className: "gs-inline" },
+            React.createElement("button", {
+              type: "button", className: "gs-btn",
+              title: "把上面的固定文案也放进池子，让它一起参与随机/轮换",
+              onClick: function () {
+                var current = typeof line.text === "string" ? line.text.trim() : "";
+                if (current.length === 0) { setNotice("上面的固定文案还是空的，先写一句再放进池子"); return; }
+                var next = (Array.isArray(poolCfg[poolKind]) ? poolCfg[poolKind] : []).slice();
+                if (next.indexOf(current) >= 0) { setNotice("这句已经在池子里了"); return; }
+                next.push(current);
+                var patch = {};
+                patch[poolKind] = next;
+                patchPool(patch);
+                setNotice("已把当前文案放进池子");
+              }
+            }, "把上面的文案加进池子"),
+            React.createElement("span", { className: "gs-hint" },
+              poolCfg.enabled !== true
+                ? "未开启：这一行用上面的固定文案"
+                : (poolSize === 0 ? "已开启但池子是空的：这一行仍用固定文案" : "开启中：每轮从池子里挑一句，页面样式对每一句都生效"))
+          )
+        )
       )
     ),
     section("字体与颜色", "font",
@@ -2711,9 +2880,19 @@ function installChatStyler(ctx) {
     var now = new Date();
     [["greeting", state.config.greeting], ["signOff", state.config.signOff]].forEach(function (pair) {
       var text = typeof pair[1].text === "string" ? pair[1].text.trim() : "";
-      if (text.length === 0) return;
-      var compiled = compileWantedLine(pair[0], text, now);
-      for (var i = 0; i < compiled.length; i += 1) list.push(compiled[i]);
+      if (text.length > 0) {
+        var compiled = compileWantedLine(pair[0], text, now);
+        for (var i = 0; i < compiled.length; i += 1) list.push(compiled[i]);
+      }
+      // 文案池：池子里的每一句都要能贴上样式（宿主每轮挑哪一句由它自己决定，页面只负责"都认识"）。
+      var poolCfg = state.config.pool;
+      var poolList = poolCfg !== undefined && poolCfg.enabled === true && Array.isArray(poolCfg[pair[0]]) ? poolCfg[pair[0]] : [];
+      for (var p = 0; p < poolList.length; p += 1) {
+        var poolText = typeof poolList[p] === "string" ? poolList[p].trim() : "";
+        if (poolText.length === 0 || poolText === text) continue;
+        var poolCompiled = compileWantedLine(pair[0], poolText, now);
+        for (var q = 0; q < poolCompiled.length; q += 1) list.push(poolCompiled[q]);
+      }
     });
     // 旧文案兼容表：只参与页面匹配渲染，不写进提示词（模型看不到）
     var legacy = state.config.legacyLines;
@@ -3384,6 +3563,8 @@ module.exports = {
     matchModeLabel: matchModeLabel,
     isPerCharAnimation: isPerCharAnimation,
     isReconnectStuckText: isReconnectStuckText,
+    sanitizePool: sanitizePool,
+    sanitizePoolList: sanitizePoolList,
     splitGraphemes: splitGraphemes,
     renderLineText: renderLineText
   }
