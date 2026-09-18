@@ -329,6 +329,50 @@ function writeRecentEmojis(list) {
   try { window.localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch (error) { /* 隐私模式等忽略 */ }
 }
 
+var TEXT_LIMIT = 200;
+/** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
+var MATCH_MODES = ["exact", "loose", "fuzzy"];
+/** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
+var CLIENT_VERSION = "1.2.0";
+
+/** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
+function matchModeLabel(mode) {
+  if (mode === "exact") return "逐字相同";
+  if (mode === "fuzzy") return "近似容错";
+  return "宽松匹配";
+}
+
+/**
+ * 样式预设：只包含"外观"字段，永远不动文案与图片。
+ * 点一下就把这套外观套到当前标签页（或两行都套），比手调 19 项快得多。
+ */
+var STYLE_PRESETS = [
+  {
+    id: "caishen", name: "财神金", dot: "#e0721a",
+    style: { color: "#e0721a", colorDark: "#ffb545", fontWeight: 700, animation: "shine", animSpeed: 1, shape: "pill", radius: 999, padY: 5, fill: "faint", shadow: "soft", letterSpacing: 0, caps: "none", italic: false }
+  },
+  {
+    id: "minimal", name: "极简灰", dot: "#6b7280",
+    style: { color: "#4b5563", colorDark: "#9ca3af", fontWeight: 500, animation: "fade", animSpeed: 1, shape: "none", radius: 0, padY: 0, fill: "none", bgColor: "", bgColorDark: "", borderWidth: 0, shadow: "none", letterSpacing: 0, caps: "none", italic: false }
+  },
+  {
+    id: "loud", name: "大字醒目", dot: "#d93026",
+    style: { color: "#c0261c", colorDark: "#ff7b70", fontSize: 20, fontWeight: 800, animation: "zoom", shape: "card", radius: 14, padY: 8, fill: "solid", bgColor: "#fff3f3", bgColorDark: "#3a1c1c", borderWidth: 1, borderColor: "#f3c6c6", borderColorDark: "#7a3b3b", shadow: "soft", letterSpacing: 0, caps: "none", italic: false }
+  },
+  {
+    id: "neon", name: "霓虹赛博", dot: "#00e5a0",
+    style: { color: "#00a37a", colorDark: "#5cffc8", fontWeight: 700, animation: "neon", shape: "tag", radius: 6, padY: 5, fill: "faint", borderWidth: 1, borderColor: "#00e5a0", borderColorDark: "#5cffc8", shadow: "glow", letterSpacing: 1, caps: "none", italic: false }
+  },
+  {
+    id: "sakura", name: "樱花", dot: "#e0729a",
+    style: { color: "#d1507f", colorDark: "#ff9ec4", fontWeight: 600, animation: "pulse", shape: "soft", radius: 12, padY: 6, fill: "solid", bgColor: "#fff0f5", bgColorDark: "#3a1f2b", borderWidth: 0, shadow: "soft", letterSpacing: 0, caps: "none", italic: false }
+  },
+  {
+    id: "typewriter", name: "复古打字", dot: "#8b6f47",
+    style: { color: "#7a5c3a", colorDark: "#d8b98c", fontWeight: 500, animation: "none", shape: "underline", radius: 0, padY: 2, fill: "none", bgColor: "", bgColorDark: "", borderWidth: 0, shadow: "none", letterSpacing: 1, caps: "none", italic: false }
+  }
+];
+
 var DEFAULT_LINE = {
   text: "",
   image: "",
@@ -336,6 +380,8 @@ var DEFAULT_LINE = {
   fontSize: 14,
   fontWeight: 600,
   color: "",
+  /* 深色主题下的专用颜色：留空表示沿用上面的浅色值 */
+  colorDark: "",
   animation: "none",
   animSpeed: 1,
   shape: "none",
@@ -343,8 +389,10 @@ var DEFAULT_LINE = {
   padY: 5,
   fill: "none",
   bgColor: "",
+  bgColorDark: "",
   borderWidth: 0,
   borderColor: "",
+  borderColorDark: "",
   shadow: "none",
   letterSpacing: 0,
   caps: "none",
@@ -356,7 +404,9 @@ var DEFAULTS = {
   signOff: Object.assign({}, DEFAULT_LINE, { text: "✅ 以上，随时叫我。" }),
   warnPercent: 70,
   criticalPercent: 85,
-  looseMatch: true
+  matchMode: "loose",
+  onlyAssistant: true,
+  legacyLines: []
 };
 
 /* ─── 样式 ────────────────────────────────────────────────────────────── */
@@ -452,6 +502,22 @@ function css() {
     ".gs-dock-alert{margin-top:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
     ".gs-dock-new{margin-left:8px;padding:1px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}",
     ".gs-dock-new:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+    /* 动态变量小标签 */
+    ".gs-tagbtn{padding:1px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;cursor:pointer}",
+    ".gs-tagbtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+    /* 样式预设卡片 */
+    ".gs-presets{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}",
+    ".gs-preset{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:0 0;color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}",
+    ".gs-preset:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+    ".gs-preset-dot{display:inline-block;width:10px;height:10px;border-radius:999px}",
+    ".gs-legacy-row{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}",
+    ".gs-legacy-row>.gs-input{flex:1;min-width:140px}",
+    ".gs-diag{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+    ".gs-diag code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
+    /* 紧凑形态：不显示百分比气泡；纯文字形态：只留一行提示 */
+    ".gs-dock-compact .gs-marker-pct{display:none}",
+    ".gs-dock-textrow{display:flex;align-items:center;gap:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}",
+    ".gs-dock-textdot{display:inline-block;width:8px;height:8px;border-radius:999px;flex:none}",
     ".gs-fold{align-items:center;gap:6px;display:flex;cursor:pointer;user-select:none}",
     ".gs-fold-caret{color:var(--dsw-alias-label-tertiary);font-size:10px;width:10px}",
     ".gs-fold-sum{color:var(--dsw-alias-label-caption);margin-left:auto;font-size:12px}",
@@ -579,12 +645,13 @@ function normalizeLine(raw, fallback) {
     ? base.animation
     : fallback.animation;
   return {
-    text: typeof base.text === "string" ? base.text : fallback.text,
+    text: typeof base.text === "string" ? base.text.slice(0, TEXT_LIMIT) : fallback.text,
     image: typeof base.image === "string" ? base.image : fallback.image,
     imageHeight: clampInt(base.imageHeight, 12, 64, fallback.imageHeight),
     fontSize: clampInt(base.fontSize, 10, 40, fallback.fontSize),
     fontWeight: snapWeight(base.fontWeight, fallback.fontWeight),
     color: typeof base.color === "string" ? base.color : fallback.color,
+    colorDark: typeof base.colorDark === "string" ? base.colorDark : fallback.colorDark,
     animation: animation,
     animSpeed: clampInt(base.animSpeed, 1, 4, fallback.animSpeed),
     shape: pickEnum(base.shape, SHAPES.map(function (item) { return item.value; }), fallback.shape),
@@ -592,13 +659,34 @@ function normalizeLine(raw, fallback) {
     padY: clampInt(base.padY, 0, 24, fallback.padY),
     fill: pickEnum(base.fill, FILLS.map(function (item) { return item.value; }), fallback.fill),
     bgColor: typeof base.bgColor === "string" ? base.bgColor : fallback.bgColor,
+    bgColorDark: typeof base.bgColorDark === "string" ? base.bgColorDark : fallback.bgColorDark,
     borderWidth: clampInt(base.borderWidth, 0, 6, fallback.borderWidth),
     borderColor: typeof base.borderColor === "string" ? base.borderColor : fallback.borderColor,
+    borderColorDark: typeof base.borderColorDark === "string" ? base.borderColorDark : fallback.borderColorDark,
     shadow: pickEnum(base.shadow, SHADOWS.map(function (item) { return item.value; }), fallback.shadow),
     letterSpacing: clampInt(base.letterSpacing, -2, 12, fallback.letterSpacing),
     caps: pickEnum(base.caps, ["none", "upper", "lower"], fallback.caps),
     italic: base.italic === true
   };
+}
+
+/**
+ * 旧文案兼容表：只有历史会话里出现过、现在不再作为固定行的文本。
+ * 它们不写进提示词，只影响页面渲染，让翻旧会话时也能贴上样式。
+ * @param raw - 任意输入。
+ * @returns {Array} [{ text, style }]，style 为 "greeting" 或 "signOff"。
+ */
+function sanitizeLegacyLines(raw) {
+  if (!Array.isArray(raw)) return [];
+  var out = [];
+  for (var i = 0; i < raw.length && out.length < 30; i += 1) {
+    var item = raw[i];
+    if (item === null || typeof item !== "object") continue;
+    var text = typeof item.text === "string" ? item.text.slice(0, TEXT_LIMIT) : "";
+    if (text.trim().length === 0) continue;
+    out.push({ text: text, style: item.style === "signOff" ? "signOff" : "greeting" });
+  }
+  return out;
 }
 
 function normalize(raw) {
@@ -607,12 +695,18 @@ function normalize(raw) {
   var source = legacy ? { greeting: { text: base.greeting }, signOff: { text: base.signOff } } : base;
   var warn = clampInt(base.warnPercent, 1, 99, DEFAULTS.warnPercent);
   var critical = clampInt(base.criticalPercent, 2, 100, DEFAULTS.criticalPercent);
+  // matchMode 是 1.2.0 的新字段；旧的布尔 looseMatch 仍能读（false = 逐字相同）
+  var matchMode = base.matchMode === undefined
+    ? (base.looseMatch === false ? "exact" : "loose")
+    : pickEnum(base.matchMode, MATCH_MODES, "loose");
   return {
     greeting: normalizeLine(source.greeting, DEFAULTS.greeting),
     signOff: normalizeLine(source.signOff, DEFAULTS.signOff),
     warnPercent: warn,
     criticalPercent: Math.max(warn + 1, critical),
-    looseMatch: base.looseMatch !== false
+    matchMode: matchMode,
+    onlyAssistant: base.onlyAssistant !== false,
+    legacyLines: sanitizeLegacyLines(base.legacyLines)
   };
 }
 
@@ -817,7 +911,7 @@ function barScale(warnPercent, criticalPercent, colors, alpha) {
 /* ─── 进度条外观偏好（纯前端，存浏览器本地；改完立即生效、不用重启） ──── */
 
 var UI_KEY = "gs.signoff.ui";
-var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic" };
+var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full" };
 var BAR_HEIGHTS = [6, 9, 12, 16];
 var MARKER_SCALES = [
   { value: 6, label: "小" },
@@ -909,10 +1003,42 @@ function validate(draft) {
   if (draft.greeting.text.length > 200) return "开场语最多 200 字";
   if (draft.signOff.text.length > 200) return "结束语最多 200 字";
   if (!(draft.criticalPercent > draft.warnPercent)) return "红色阈值必须大于黄色阈值";
+  // 旧文案表里的空行：拦住保存（否则一保存就被归一化丢掉，用户会以为"刚加的行没了"）
+  var legacy = Array.isArray(draft.legacyLines) ? draft.legacyLines : [];
+  for (var i = 0; i < legacy.length; i += 1) {
+    if (legacy[i] === null || typeof legacy[i] !== "object" || String(legacy[i].text).trim().length === 0) {
+      return "旧文案兼容表里有空行：填上内容或删掉它";
+    }
+  }
   return null;
 }
 
 /* ─── 行渲染（编辑器预览与输入框上方卡片共用） ────────────────────────── */
+
+/** 当前是不是深色主题（宿主用 body[data-ds-dark-theme] 标记）。 */
+function isDarkTheme() {
+  try {
+    return document.body !== null && document.body !== undefined && typeof document.body.hasAttribute === "function"
+      && document.body.hasAttribute("data-ds-dark-theme");
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * 取某字段在当前主题下的实际值：深色主题下优先用 `<字段>Dark`，为空则回落到浅色值。
+ * @param {Object} line 配置里的行对象。
+ * @param {string} field 字段名（color / bgColor / borderColor）。
+ * @returns {string} 实际使用的颜色。
+ */
+function effectiveColor(line, field) {
+  var value = typeof line[field] === "string" ? line[field] : "";
+  if (isDarkTheme()) {
+    var dark = line[field + "Dark"];
+    if (typeof dark === "string" && dark.length > 0) return dark;
+  }
+  return value;
+}
 
 /**
  * 文字部分的样式：字号/字重/颜色，加上字距、大小写、斜体。
@@ -921,7 +1047,8 @@ function validate(draft) {
  */
 function lineStyle(line) {
   var style = { fontSize: line.fontSize + "px", fontWeight: line.fontWeight };
-  if (line.color !== "") style.color = line.color;
+  var color = effectiveColor(line, "color");
+  if (color !== "") style.color = color;
   if (line.letterSpacing !== 0) style.letterSpacing = line.letterSpacing + "px";
   if (line.caps === "upper") style.textTransform = "uppercase";
   else if (line.caps === "lower") style.textTransform = "lowercase";
@@ -952,9 +1079,11 @@ function lineVars(line) {
     vars["--gs-radius"] = line.radius + "px";
     has = true;
   }
-  if (line.fill === "solid" && line.bgColor !== "") { vars.background = line.bgColor; has = true; }
+  var bg = effectiveColor(line, "bgColor");
+  if (line.fill === "solid" && bg !== "") { vars.background = bg; has = true; }
   if (line.borderWidth > 0) {
-    vars.border = line.borderWidth + "px solid " + (line.borderColor === "" ? "currentColor" : line.borderColor);
+    var borderColor = effectiveColor(line, "borderColor");
+    vars.border = line.borderWidth + "px solid " + (borderColor === "" ? "currentColor" : borderColor);
     has = true;
   }
   if (line.animSpeed !== 1) { vars["--gs-anim-speed"] = String(line.animSpeed); has = true; }
@@ -1026,6 +1155,77 @@ function Editor() {
   var recentPair = React.useState(readRecentEmojis);
   var recentEmojis = recentPair[0];
   var setRecentEmojis = recentPair[1];
+  // 样式预设：默认一次套用到开场与结束语两行（只改外观，不动文案与图片）
+  var presetBothPair = React.useState(true);
+  var presetBoth = presetBothPair[0];
+  var setPresetBoth = presetBothPair[1];
+  // 旧的 deep 链接/折叠状态之外，诊断区也默认折叠
+  var diagPair = React.useState(false);
+  var diagOpen = diagPair[0];
+  var setDiagOpen = diagPair[1];
+
+  /**
+   * 套用一套外观预设：只覆盖预设里列出的"外观"字段，文案与图片原样保留。
+   * @param {Object} preset STYLE_PRESETS 里的一项。
+   */
+  function applyPreset(preset) {
+    var targets = presetBoth ? ["greeting", "signOff"] : [tab];
+    var patch = {};
+    for (var i = 0; i < targets.length; i += 1) {
+      var key = targets[i];
+      patch[key] = Object.assign({}, draft[key], preset.style);
+    }
+    dirtyRef.current = true;
+    setTouched(true);
+    setSaved(false);
+    setDraft(Object.assign({}, draft, patch));
+    setNotice("已套用「" + preset.name + "」外观（文案与图片未改动），正在保存…");
+  }
+
+  /** 导出当前配置为 JSON 文件（含图片短地址；分享给别人时对方能直接用）。 */
+  function exportConfig() {
+    try {
+      var blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = url;
+      link.download = "greet-signoff.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
+      setNotice("已导出 greet-signoff.json");
+    } catch (error) {
+      setNotice("导出失败：" + (error && error.message ? error.message : error));
+    }
+  }
+
+  /**
+   * 从 JSON 文件导入配置：先按客户端规则归一化，再写回宿主。
+   * @param {File} file 用户选的文件。
+   */
+  function importConfig(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed = null;
+      try {
+        parsed = JSON.parse(String(reader.result));
+      } catch (error) {
+        setNotice("导入失败：不是合法的 JSON 文件");
+        return;
+      }
+      var raw = parsed !== null && typeof parsed === "object" && parsed.config !== undefined ? parsed.config : parsed;
+      var next = normalize(raw);
+      dirtyRef.current = true;
+      setTouched(true);
+      setSaved(false);
+      setDraft(next);
+      setNotice("已载入配置，正在保存…");
+      commit(next, true);
+    };
+    reader.onerror = function () { setNotice("导入失败：读文件出错"); };
+    reader.readAsText(file);
+  }
 
   function toggleAdvanced() {
     var next = !advanced;
@@ -1312,6 +1512,22 @@ function Editor() {
               })
             )
           : null,
+        React.createElement("div", { className: "gs-emojis", key: "vars" },
+          React.createElement("span", { className: "gs-label" }, "动态变量（点一下插到末尾）"),
+          [["{date}", "日期，如 2026-09-18"], ["{weekday}", "星期几"], ["{daypart}", "早上好 / 下午好 / 晚上好…"],
+            ["{year}", "年"], ["{month}", "月"], ["{day}", "日"], ["{time}", "时:分"]
+          ].map(function (pair) {
+            return React.createElement("button", {
+              key: pair[0], type: "button", className: "gs-tagbtn", title: pair[1],
+              onClick: function () {
+                var needsSpace = line.text.length > 0 && !/\s$/.test(line.text);
+                setLine({ text: line.text + (needsSpace ? " " : "") + pair[0] });
+              }
+            }, pair[0]);
+          })
+        ),
+        React.createElement("div", { className: "gs-hint", key: "resolved" },
+          "现在会解析成：" + (resolveTemplate(line.text, new Date()).replace(/\n/g, " ⏎ ") || "（空）")),
         React.createElement("div", { className: "gs-hint" },
           "常用表情在上面；点「全部表情」展开 " + ALL_EMOJIS.length + " 个，可用中文名搜索（如「皇冠」「鞭炮」「钱包」）。也可以直接用系统表情面板：Win + ."),
         EMOJI_SCAN.blank > 0
@@ -1369,10 +1585,56 @@ function Editor() {
               : React.createElement("span", { className: "gs-hint" }, "PNG / JPEG / GIF / WebP ≤300KB（只在页面显示）")
           )
         ),
-        sliderCell("图高", line.imageHeight, 12, 64, 1, "px", function (value) { setLine({ imageHeight: value }); }, "imageHeight")
+        sliderCell("图高", line.imageHeight, 12, 64, 1, "px", function (value) { setLine({ imageHeight: value }); }, "imageHeight"),
+        React.createElement("div", { className: "gs-cell gs-cell-wide", key: "dark" },
+          React.createElement("span", { className: "gs-label" }, "深色主题"),
+          React.createElement("div", { className: "gs-cellgroup" },
+            [["colorDark", "字色", "#ffb545"], ["bgColorDark", "底色", "#3a2a12"], ["borderColorDark", "边框色", "#8a6a30"]].map(function (entry) {
+              var fieldName = entry[0];
+              var current = typeof line[fieldName] === "string" ? line[fieldName] : "";
+              var patch = {};
+              return React.createElement("span", { className: "gs-thumbwrap", key: fieldName },
+                React.createElement("span", { className: "gs-label" }, entry[1]),
+                React.createElement("input", {
+                  className: "gs-color", type: "color", title: entry[1] + "（深色主题下生效）",
+                  value: current === "" ? entry[2] : current,
+                  onChange: function (event) {
+                    var next = {};
+                    next[fieldName] = event.target.value;
+                    setLine(next);
+                  }
+                }),
+                React.createElement("button", {
+                  type: "button", className: current === "" ? "gs-btn gs-btn-on" : "gs-btn",
+                  title: "留空时沿用浅色主题的取值",
+                  onClick: function () { var next = {}; next[fieldName] = ""; setLine(next); }
+                }, current === "" ? "跟随浅色" : "清除")
+              );
+            }),
+            React.createElement("span", { className: "gs-hint" }, "只在深色主题下覆盖上面的颜色；不填就跟随浅色")
+          )
+        )
       ])
     ),
     section("外观样式（形状 / 填充 / 边框 / 阴影，只影响页面显示）", "deco",
+      React.createElement("div", { className: "gs-presets", key: "presets" },
+        React.createElement("span", { className: "gs-label" }, "一键外观"),
+        STYLE_PRESETS.map(function (preset) {
+          return React.createElement("button", {
+            key: preset.id, type: "button", className: "gs-preset",
+            title: "套用「" + preset.name + "」的外观（文案与图片不动）",
+            onClick: function () { applyPreset(preset); }
+          },
+            React.createElement("span", { className: "gs-preset-dot", style: { background: preset.dot } }),
+            preset.name
+          );
+        }),
+        React.createElement("button", {
+          type: "button", className: presetBoth ? "gs-tab gs-tab-on" : "gs-tab",
+          title: "开：一次改两行；关：只改当前标签页",
+          onClick: function () { setPresetBoth(!presetBoth); }
+        }, presetBoth ? "两行都套" : "只套本页")
+      ),
       grid("deco-grid", [
         selectCell("形状", SHAPES, line.shape, function (value) {
           var patch = { shape: value };
@@ -1426,18 +1688,65 @@ function Editor() {
         React.createElement("span", { className: "gs-fold-caret" }, advanced ? "▼" : "▶"),
         React.createElement("span", { className: "gs-sec-title", style: { marginBottom: 0 } }, "上下文提醒（阈值 = 进度条颜色分界）"),
         React.createElement("span", { className: "gs-fold-sum" },
-          "黄 " + draft.warnPercent + "% · 红 " + draft.criticalPercent + "% · " + (draft.looseMatch ? "宽松匹配" : "精确匹配"))
+          "黄 " + draft.warnPercent + "% · 红 " + draft.criticalPercent + "% · " + matchModeLabel(draft.matchMode))
       ),
       advanced
         ? grid("alert-grid", [
             sliderCell("黄色", draft.warnPercent, 1, 99, 1, "%", function (value) { patchTop({ warnPercent: value }); }, "warn"),
             sliderCell("红色", draft.criticalPercent, 2, 100, 1, "%", function (value) { patchTop({ criticalPercent: value }); }, "crit"),
             selectCell("匹配", [
-              { value: true, label: "宽松（推荐）" },
-              { value: false, label: "逐字相同" }
-            ], draft.looseMatch, function (value) { patchTop({ looseMatch: value === "true" || value === true }); }, "loose")
+              { value: "exact", label: "逐字相同" },
+              { value: "loose", label: "宽松（推荐）" },
+              { value: "fuzzy", label: "近似容错（差一两个字也算）" }
+            ], draft.matchMode, function (value) { patchTop({ matchMode: value }); }, "matchMode", true),
+            selectCell("贴样式范围", [
+              { value: true, label: "只贴我的回复（推荐）" },
+              { value: false, label: "整段对话都贴" }
+            ], draft.onlyAssistant, function (value) { patchTop({ onlyAssistant: value === "true" || value === true }); }, "onlyAssistant", true)
           ])
         : null
+    ),
+    section("旧文案兼容（可选 · 只影响显示，不写进提示词）", "legacy",
+      React.createElement("div", { className: "gs-hint", key: "legacy-hint" },
+        "换过文案之后，历史会话里的旧开场/收尾也可以贴上样式：把旧原文填进来，并选它当初属于哪一行。"),
+      (draft.legacyLines || []).map(function (item, index) {
+        return React.createElement("div", { className: "gs-legacy-row", key: "legacy-" + index },
+          React.createElement("input", {
+            className: "gs-input", value: item.text, placeholder: "旧文案原文",
+            onChange: function (event) {
+              var next = (draft.legacyLines || []).slice();
+              next[index] = Object.assign({}, item, { text: event.target.value });
+              patchTop({ legacyLines: next });
+            }
+          }),
+          React.createElement("select", {
+            className: "gs-input gs-select", value: item.style, style: { width: 116, flex: "none" },
+            onChange: function (event) {
+              var next = (draft.legacyLines || []).slice();
+              next[index] = Object.assign({}, item, { style: event.target.value });
+              patchTop({ legacyLines: next });
+            }
+          },
+            React.createElement("option", { value: "greeting" }, "用开场样式"),
+            React.createElement("option", { value: "signOff" }, "用收尾样式")
+          ),
+          React.createElement("button", {
+            type: "button", className: "gs-btn",
+            onClick: function () {
+              var next = (draft.legacyLines || []).slice();
+              next.splice(index, 1);
+              patchTop({ legacyLines: next });
+            }
+          }, "删除")
+        );
+      }),
+      React.createElement("div", { className: "gs-presets", key: "legacy-add" },
+        React.createElement("button", {
+          type: "button", className: "gs-btn",
+          onClick: function () { patchTop({ legacyLines: (draft.legacyLines || []).concat([{ text: "", style: "greeting" }]) }); }
+        }, "+ 添加一条旧文案"),
+        React.createElement("span", { className: "gs-hint" }, "最多 30 条；空行会拦住保存，填上或删掉即可")
+      )
     )
   ];
 
@@ -1446,6 +1755,11 @@ function Editor() {
   body.push(React.createElement("div", { className: "gs-sec", key: "bar" },
     React.createElement("div", { className: "gs-sec-title" }, "进度条外观（立即生效，存浏览器本地）"),
     grid("bar-grid", [
+      selectCell("形态", [
+        { value: "full", label: "完整（进度条 + 小车 + 百分比）" },
+        { value: "compact", label: "紧凑细条（不显示百分比气泡）" },
+        { value: "text", label: "只显示一行文字" }
+      ], ui.display, function (value) { setUiPrefs({ display: value }); }, "display", true),
       selectCell("粗细", BAR_HEIGHTS.map(function (h) { return { value: h, label: h + "px" }; }), ui.barHeight,
         function (value) { setUiPrefs({ barHeight: Number(value) }); }, "barHeight"),
       selectCell("大小", MARKER_SCALES, ui.markerScale,
@@ -1512,6 +1826,29 @@ function Editor() {
   if (error !== "") body.push(React.createElement("div", { className: "gs-hint gs-hint-error", key: "error", role: "alert" }, error));
   else if (invalid !== null) body.push(React.createElement("div", { className: "gs-hint gs-hint-error", key: "invalid", role: "alert" }, "还差一步：" + invalid));
   if (notice !== "") body.push(React.createElement("div", { className: "gs-hint", key: "notice" }, notice));
+  // 诊断：自查用。样式没贴上的时候，先看这里的"命中行数"和"跳过非助手"。
+  body.push(React.createElement("div", { className: "gs-sec", key: "diag" },
+    React.createElement("div", {
+      className: "gs-fold", role: "button", tabIndex: 0,
+      onClick: function () { setDiagOpen(!diagOpen); },
+      onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") setDiagOpen(!diagOpen); }
+    },
+      React.createElement("span", { className: "gs-fold-caret" }, diagOpen ? "▼" : "▶"),
+      React.createElement("span", { className: "gs-sec-title", style: { marginBottom: 0 } }, "诊断（样式没生效时先看这里）")
+    ),
+    diagOpen
+      ? React.createElement("div", { className: "gs-diag" },
+          React.createElement("div", null, "插件版本：v" + CLIENT_VERSION + "（浏览器半）"),
+          React.createElement("div", null, "配置文件：" + (store.path || "（未知，宿主半可能没加载）")),
+          React.createElement("div", null, "配置来源：" + (state.error ? "读取失败 · " + state.error : store.loaded ? "已读取" : "尚未读取")),
+          React.createElement("div", null, "贴样式器：运行 " + stylerStats.runs + " 次 · 上次耗时 " + stylerStats.lastMs + "ms"),
+          React.createElement("div", null, "上次扫描：命中 " + stylerStats.matched + " 行 / 重扫 " + stylerStats.scanned + " 块 / 共 " + stylerStats.blocks + " 块 · 跳过非助手 " + stylerStats.skippedNonAssistant + " 块"),
+          React.createElement("div", null, "匹配模式：" + matchModeLabel(state.config.matchMode) + " · 贴样式范围：" + (state.config.onlyAssistant === false ? "整段对话" : "只贴我的回复") + " · 旧文案 " + (state.config.legacyLines || []).length + " 条"),
+          React.createElement("div", null, "当前标签页命中：" + (typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0) + " 行（整页）"),
+          React.createElement("div", null, "宿主导航条读数：" + (typeof document !== "undefined" && document.querySelector(".gs-dock-bar") ? (document.querySelector(".gs-dock-bar").getAttribute("aria-valuenow") || "未知") : "未挂载"))
+        )
+      : null
+  ));
   body.push(React.createElement("div", { className: "gs-actions", key: "actions" },
     React.createElement("button", {
       type: "button", className: "gs-btn gs-btn-on",
@@ -1521,6 +1858,19 @@ function Editor() {
       type: "button", className: "gs-btn",
       onClick: function () { commit(DEFAULTS); }
     }, "恢复默认"),
+    React.createElement("button", {
+      type: "button", className: "gs-btn", title: "把当前配置导出成 JSON（含图片地址，可备份或分享）",
+      onClick: exportConfig
+    }, "导出配置"),
+    React.createElement("input", {
+      className: "gs-file", id: fileId + "-import", type: "file", accept: "application/json,.json",
+      onChange: function (event) {
+        var file = event.target.files && event.target.files[0];
+        if (file) importConfig(file);
+        event.target.value = "";
+      }
+    }),
+    React.createElement("label", { className: "gs-btn", htmlFor: fileId + "-import", title: "从 JSON 文件导入配置" }, "导入配置"),
     React.createElement("span", { className: "gs-hint" }, "改动也会自动保存")
   ));
 
@@ -1662,11 +2012,46 @@ function GreetDock(props) {
 
   // 百分比直接取投影的实时值（不再节流）：车头上的数字随占用实时变化。
   var hasReading = occupancy !== null;
-  var tip = hasReading
+  // 采样"每一轮大概吃掉多少 token"：占用只在下一轮请求过后才跳一截，
+  // 因此把 >200 的正向增量当作一次"又走了一轮"，取最近几次的均值来估算还能聊几轮。
+  var samplerRef = React.useRef({ last: null, jumps: [] });
+  var usedTokens = hasReading ? occupancy.used : -1;
+  React.useEffect(function () {
+    if (usedTokens < 0) return;
+    var sampler = samplerRef.current;
+    if (sampler.last === null) { sampler.last = usedTokens; return; }
+    var delta = usedTokens - sampler.last;
+    if (delta > 200) {
+      sampler.jumps.push(delta);
+      if (sampler.jumps.length > 6) sampler.jumps.shift();
+      sampler.last = usedTokens;
+    } else if (delta < -200) {
+      // 压缩/清空导致占用回落：重置基线，别把负数算进每轮成本
+      sampler.last = usedTokens;
+    }
+  }, [usedTokens]);
+  var jumps = samplerRef.current.jumps;
+  var avgPerTurn = null;
+  if (jumps.length > 0) {
+    var jumpSum = 0;
+    for (var ji = 0; ji < jumps.length; ji += 1) jumpSum += jumps[ji];
+    avgPerTurn = Math.round(jumpSum / jumps.length);
+  }
+  var remaining = hasReading ? Math.max(0, occupancy.capacity - occupancy.used) : null;
+  var turnsLeft = avgPerTurn !== null && avgPerTurn > 0 && remaining !== null
+    ? Math.max(0, Math.floor(remaining / avgPerTurn))
+    : null;
+  var detail = hasReading
     ? "上下文占用 " + percent + "% · ~" + formatTokens(occupancy.used) + " / " + formatTokens(occupancy.capacity)
+      + " · 剩余 ~" + formatTokens(remaining)
+      + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + jumps.length + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : "")
     : "上下文占用未知（发一条消息后显示）";
+  var tip = detail;
   // 还没有任何请求记录时不显示 "0%"（那看起来像坏了），显示一个短横。
   var pctText = hasReading ? percent + "%" : "—";
+  var shortText = hasReading
+    ? percent + "% · 剩余 ~" + formatTokens(remaining) + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮" : "")
+    : "上下文占用未知";
   var alertLine = tone === "critical"
     ? "🚨 上下文即将占满：请开新会话继续"
     : tone === "warn"
@@ -1714,11 +2099,47 @@ function GreetDock(props) {
   // 若把"与输入框对齐"的缩进做成外层 padding，白底就会跟着撑到两侧，出现多余的白框。
   // 因此缩进只作用在内层 .gs-dock-row 上（该元素不在宿主选择器的直接子级匹配范围内）。
   var rowStyle = insets === null ? {} : { paddingLeft: insets.left + "px", paddingRight: insets.right + "px" };
+  // 形态：full 完整 / compact 紧凑细条（不显示百分比气泡）/ text 只显示一行文字。
+  var display = ui.display === "compact" || ui.display === "text" ? ui.display : "full";
+  var dockClass = "gs-dock";
+  if (critical) dockClass += " gs-dock-critical";
+  if (display === "compact") dockClass += " gs-dock-compact";
+  var barNode = React.createElement("div", {
+    className: "gs-dock-bar",
+    role: "progressbar",
+    "aria-label": "上下文占用",
+    "aria-valuemin": 0,
+    "aria-valuemax": 100,
+    "aria-valuenow": hasReading ? percent : undefined,
+    "aria-valuetext": detail,
+    title: detail
+  },
+    React.createElement("div", {
+      className: "gs-dock-fill",
+      style: critical ? { width: percent + "%", background: dangerColor } : { width: (percent > 0 ? percent : 0) + "%" }
+    }),
+    (marker === "" && markerImage === "")
+      ? null
+      : React.createElement("div", {
+          className: critical ? "gs-marker gs-marker-critical" : "gs-marker",
+          style: flip ? { left: clampLeft, "--gs-flip": "-1" } : { left: clampLeft }
+        },
+          markerNode,
+          React.createElement("span", { className: "gs-marker-pct", style: critical ? undefined : { background: color } }, pctText)
+        )
+  );
+  var textNode = React.createElement("div", { className: "gs-dock-textrow", title: detail },
+    React.createElement("span", { className: "gs-dock-textdot", style: { background: critical ? dangerColor : color } }),
+    React.createElement("span", null, shortText),
+    canStartSession && alertLine !== null
+      ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
+      : null
+  );
   return React.createElement("div", {
-    className: critical ? "gs-dock gs-dock-critical" : "gs-dock",
+    className: dockClass,
     ref: dockRef,
     style: {
-      "--gs-bar-h": barHeight + "px",
+      "--gs-bar-h": (display === "compact" ? 4 : barHeight) + "px",
       "--gs-marker-extra": markerExtra + "px",
       "--gs-scale": scale,
       "--gs-scale-faint": scaleFaint,
@@ -1728,32 +2149,9 @@ function GreetDock(props) {
   },
     React.createElement("div", { className: "gs-tip" }, tip),
     React.createElement("div", { className: "gs-dock-row", style: rowStyle },
-      React.createElement("div", {
-        className: "gs-dock-bar",
-        role: "progressbar",
-        "aria-label": "上下文占用",
-        "aria-valuemin": 0,
-        "aria-valuemax": 100,
-        "aria-valuenow": hasReading ? percent : undefined,
-        "aria-valuetext": tip,
-        title: tip
-      },
-        React.createElement("div", {
-          className: "gs-dock-fill",
-          style: critical ? { width: percent + "%", background: dangerColor } : { width: (percent > 0 ? percent : 0) + "%" }
-        }),
-        (marker === "" && markerImage === "")
-          ? null
-          : React.createElement("div", {
-              className: critical ? "gs-marker gs-marker-critical" : "gs-marker",
-              style: flip ? { left: clampLeft, "--gs-flip": "-1" } : { left: clampLeft }
-            },
-              markerNode,
-              React.createElement("span", { className: "gs-marker-pct", style: critical ? undefined : { background: color } }, pctText)
-            )
-      )
+      display === "text" ? textNode : barNode
     ),
-    alertLine === null ? null : React.createElement("div", { className: "gs-dock-alert" },
+    display === "text" || alertLine === null ? null : React.createElement("div", { className: "gs-dock-alert" },
       alertLine,
       canStartSession
         ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
@@ -1774,15 +2172,19 @@ var CHAT_CLASSES = ["gs-chat-line", "gs-chat-greeting", "gs-chat-signoff", "gs-c
  * 一行配置对应的 CSS 声明（字号/字重/字距/大小写/形状/填充/边框/动效）。
  * 供对话正文的注入样式表使用；值在客户端已被归一化，因此这里可以安全地直接拼接。
  * @param {Object} line 配置里的行对象。
+ * @param {boolean} dark 是否生成"深色主题"用的那一份（用 `<字段>Dark`，留空则回落浅色）。
  * @returns {string} CSS 声明串。
  */
-function lineCssDecls(line) {
+function lineCssDecls(line, dark) {
   var preset = null;
   for (var i = 0; i < SHAPES.length; i += 1) {
     if (SHAPES[i].value === line.shape) preset = SHAPES[i];
   }
+  var color = dark === true ? (line.colorDark || line.color) : line.color;
+  var bgColor = dark === true ? (line.bgColorDark || line.bgColor) : line.bgColor;
+  var borderColor = dark === true ? (line.borderColorDark || line.borderColor) : line.borderColor;
   var decl = "font-size:" + line.fontSize + "px;font-weight:" + line.fontWeight + ";";
-  if (line.color !== "") decl += "color:" + line.color + ";";
+  if (color !== "") decl += "color:" + color + ";";
   if (line.letterSpacing !== 0) decl += "letter-spacing:" + line.letterSpacing + "px;";
   if (line.caps === "upper") decl += "text-transform:uppercase;";
   else if (line.caps === "lower") decl += "text-transform:lowercase;";
@@ -1795,8 +2197,8 @@ function lineCssDecls(line) {
   }
   if (line.shape === "underline") decl += "border-bottom:2px solid currentColor;";
   if (line.shape === "blockquote") decl += "border-left:3px solid currentColor;";
-  if (line.fill === "solid" && line.bgColor !== "") decl += "background:" + line.bgColor + ";";
-  if (line.borderWidth > 0) decl += "border:" + line.borderWidth + "px solid " + (line.borderColor === "" ? "currentColor" : line.borderColor) + ";";
+  if (line.fill === "solid" && bgColor !== "") decl += "background:" + bgColor + ";";
+  if (line.borderWidth > 0) decl += "border:" + line.borderWidth + "px solid " + (borderColor === "" ? "currentColor" : borderColor) + ";";
   if (line.animSpeed !== 1) decl += "--gs-anim-speed:" + line.animSpeed + ";";
   return decl;
 }
@@ -1804,16 +2206,22 @@ function lineCssDecls(line) {
 /** 生成对话正文用的样式规则（类名固定，内容随配置变化）。 */
 function chatCss(config) {
   var rules = [];
+  var darkRules = [];
   [["greeting", config.greeting], ["signOff", config.signOff]].forEach(function (pair) {
     var line = pair[1];
     if (typeof line.text !== "string" || line.text.trim().length === 0) return;
     var cls = ".gs-chat-" + pair[0].toLowerCase();
-    rules.push(cls + "{" + lineCssDecls(line) + "}");
+    rules.push(cls + "{" + lineCssDecls(line, false) + "}");
+    // 深色主题专用：宿主用 body[data-ds-dark-theme] 标记深色，这条选择器权重更高，会覆盖上面的规则
+    if (line.colorDark !== "" || line.bgColorDark !== "" || line.borderColorDark !== "") {
+      darkRules.push("body[data-ds-dark-theme] " + cls + "{" + lineCssDecls(line, true) + "}");
+    }
     if (typeof line.image === "string" && line.image.length > 0) {
       rules.push(cls + ".gs-chat-img::before{height:" + line.imageHeight + "px;width:" +
         Math.round(line.imageHeight * 1.6) + "px;background-image:url(\"" + line.image + "\")}");
     }
   });
+  rules = rules.concat(darkRules);
   // 系统开了"减少动态效果"时，对话里的固定行也不动（编辑器预览那条媒体查询在 css() 里）
   rules.push("@media (prefers-reduced-motion: reduce){.gs-chat-line,.gs-chat-line span{animation:none !important}}");
   return rules.join("\n");
@@ -1825,10 +2233,26 @@ var FIXED_LINE_DROP = /[\u200B-\u200D\u2060\uFEFF\u00AD]/g;
 /** 宽松匹配时允许出现在行首/行尾的装饰性字符：引号、括号、书名号、星号、井号、句读。 */
 var LOOSE_EDGE_CHARS = "\\s\\u200B-\\u200D\\u2060\\uFEFF\\u00AD\"'“”‘’「」『』《》()（）\\[\\]【】*_~`#>";
 
+/** 标点折叠表：把中文/全角标点统一成 ASCII，这样"，"与","、"。"与"."都算同一行。 */
+var PUNCT_FOLD = {
+  "，": ",", "、": ",", "。": ".", "．": ".", "：": ":", "；": ";", "！": "!", "？": "?",
+  "（": "(", "）": ")", "［": "[", "］": "]", "｛": "{", "｝": "}", "【": "[", "】": "]",
+  "《": "<", "》": ">", "「": "\"", "」": "\"", "『": "'", "』": "'", "“": "\"", "”": "\"",
+  "‘": "'", "’": "'", "～": "~", "－": "-", "—": "-", "–": "-", "·": ".", "・": ".", "　": " "
+};
+var PUNCT_FOLD_RE = new RegExp("[" + Object.keys(PUNCT_FOLD).join("") + "]", "g");
+
+/** 近似匹配（fuzzy）的最低相似度，以及参与近似匹配的最短长度。 */
+var FUZZY_MIN_SIMILARITY = 0.86;
+var FUZZY_MIN_LENGTH = 6;
+
+/** 宽松归一用的正则（只建一次）。 */
+var FOLD_HEAD_RE = new RegExp("^[" + LOOSE_EDGE_CHARS + "]+");
+var FOLD_TAIL_RE = new RegExp("[" + LOOSE_EDGE_CHARS + "]+$");
+var FOLD_ASCII_TAIL_RE = /[,.:;!?]+$/;
+
 /**
- * 把一行文本归一化成"用于比对"的形式：去掉零宽不可见字符、把连续空白压成一个空格。
- * 不改变任何可视内容，只让"配置里的行"和"正文里渲染出来的行"在有空隙差异时也能匹配上，
- * 否则差一个空格就会贴着不样式、看起来像"我配的没生效"。
+ * 把一行文本归一化成"逐字比对"的形式：去掉零宽不可见字符、把连续空白压成一个空格。
  * @param {string} text 原始文本。
  * @returns {string} 归一化后的文本。
  */
@@ -1837,17 +2261,187 @@ function normalizeFixedLine(text) {
 }
 
 /**
- * 更进一步的"宽容"归一化：再削掉首尾的引号/括号/星号/井号与句读，并统一成小写。
- * 模型偶尔会把固定行写成 **加粗**、"加引号"、以句号结尾，这类差异不该让样式整条失效。
+ * 宽松归一（"宽松/近似"两档都用它）：在逐字归一的基础上再做四件事——
+ *   1) Unicode NFKC（全角字母数字、兼容字符归一）；
+ *   2) 中文/全角标点折叠成 ASCII（"，"→","、"。"→"."）；
+ *   3) 去掉所有空白（含全角空格）；
+ *   4) 削掉首尾的引号/括号/星号/井号/句读，并统一成小写。
+ * 这样"配的是「你好，」正文写「你好.」""中间多一个空格""繁体标点"都不再导致样式失效。
  * @param {string} text 原始文本。
  * @returns {string} 用于宽松比对的文本。
  */
-function looseFixedLine(text) {
-  var value = normalizeFixedLine(text);
-  value = value.replace(new RegExp("^[" + LOOSE_EDGE_CHARS + "]+"), "");
-  value = value.replace(new RegExp("[" + LOOSE_EDGE_CHARS + "。．.!！?？,，、;；:：]+$"), "");
+function foldFixedLine(text) {
+  var value = String(text).replace(FIXED_LINE_DROP, "");
+  if (typeof value.normalize === "function") {
+    try { value = value.normalize("NFKC"); } catch (error) { /* 老浏览器忽略 */ }
+  }
+  value = value.replace(PUNCT_FOLD_RE, function (ch) { return PUNCT_FOLD[ch] !== undefined ? PUNCT_FOLD[ch] : ch; });
+  value = value.replace(/\s+/g, "");
+  value = value.replace(FOLD_HEAD_RE, "").replace(FOLD_ASCII_TAIL_RE, "").replace(FOLD_TAIL_RE, "").replace(FOLD_ASCII_TAIL_RE, "");
   return value.toLowerCase();
 }
+
+/**
+ * 编辑距离（Levenshtein），用于近似匹配。两串都很短（固定行 ≤ 200 字），直接滚动数组算。
+ * @param {string} a 串 A。
+ * @param {string} b 串 B。
+ * @returns {number} 需要的最少增删改次数。
+ */
+function editDistance(a, b) {
+  if (a === b) return 0;
+  var la = a.length;
+  var lb = b.length;
+  if (la === 0) return lb;
+  if (lb === 0) return la;
+  var prev = new Array(lb + 1);
+  var cur = new Array(lb + 1);
+  for (var j = 0; j <= lb; j += 1) prev[j] = j;
+  for (var i = 1; i <= la; i += 1) {
+    cur[0] = i;
+    for (var k = 1; k <= lb; k += 1) {
+      var cost = a.charCodeAt(i - 1) === b.charCodeAt(k - 1) ? 0 : 1;
+      var del = prev[k] + 1;
+      var ins = cur[k - 1] + 1;
+      var sub = prev[k - 1] + cost;
+      cur[k] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+    var swap = prev;
+    prev = cur;
+    cur = swap;
+  }
+  return prev[lb];
+}
+
+/**
+ * 两串的相似度 0–1。
+ * @param {string} a 已宽松归一的串。
+ * @param {string} b 已宽松归一的串。
+ * @returns {number} 1 表示完全相同。
+ */
+function lineSimilarity(a, b) {
+  var max = Math.max(a.length, b.length);
+  if (max === 0) return 1;
+  return 1 - editDistance(a, b) / max;
+}
+
+/**
+ * 判断一段渲染出来的文本是否就是某个固定行的变体。
+ * @param {string} rawText 元素文本。
+ * @param {Object} wanted compileWantedLine 结果里的一项。
+ * @param {string} mode "exact" / "loose" / "fuzzy"。
+ * @returns {boolean} 命中为 true。
+ */
+function matchLineText(rawText, wanted, mode) {
+  var norm = normalizeFixedLine(rawText);
+  if (norm.length === 0) return false;
+  if (norm === wanted.norm) return true;
+  // 逐字相同档只认"归一化后完全相同"（含标点），不做任何折叠
+  if (mode === "exact") return false;
+  var fold = foldFixedLine(rawText);
+  if (fold.length > 0 && fold === wanted.fold) return true;
+  if (mode !== "fuzzy") return false;
+  if (fold.length < FUZZY_MIN_LENGTH || wanted.fold.length < FUZZY_MIN_LENGTH) return false;
+  // 长度差太多就别算了：既省时间，也避免把"短句"近似到"另一句"
+  var limit = Math.max(2, Math.round(wanted.fold.length * 0.25));
+  if (Math.abs(fold.length - wanted.fold.length) > limit) return false;
+  return lineSimilarity(fold, wanted.fold) >= FUZZY_MIN_SIMILARITY;
+}
+
+/* ─── 动态变量 ───────────────────────────────────────────────────────── */
+
+var WEEKDAY_NAMES = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+var DAYPART_NAMES = ["凌晨好", "早上好", "上午好", "中午好", "下午好", "晚上好", "夜深了"];
+
+/** 时段索引：0 凌晨 / 1 早上 / 2 上午 / 3 中午 / 4 下午 / 5 晚上 / 6 深夜。 */
+function daypartIndex(hour) {
+  if (hour < 5) return 6;
+  if (hour < 8) return 0;
+  if (hour < 11) return 1;
+  if (hour < 13) return 3;
+  if (hour < 18) return 4;
+  if (hour < 23) return 5;
+  return 6;
+}
+
+function pad2(value) {
+  return (value < 10 ? "0" : "") + value;
+}
+
+/**
+ * 解析文案里的动态变量：
+ * `{date}` 2026-09-18 · `{year}` · `{month}` · `{day}` · `{weekday}` 星期五 ·
+ * `{daypart}` 早上好 · `{time}` HH:MM。
+ * 不认识的 `{xxx}` 原样保留。
+ * @param {string} text 含变量的文案。
+ * @param {Date} now 当前时间。
+ * @returns {string} 解析后的文案。
+ */
+function resolveTemplate(text, now) {
+  if (typeof text !== "string" || text.indexOf("{") < 0) return text;
+  var d = now instanceof Date ? now : new Date();
+  return text.replace(/\{([a-zA-Z]+)\}/g, function (all, rawName) {
+    var name = String(rawName).toLowerCase();
+    if (name === "date") return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+    if (name === "year") return String(d.getFullYear());
+    if (name === "month") return pad2(d.getMonth() + 1);
+    if (name === "day") return pad2(d.getDate());
+    if (name === "weekday") return WEEKDAY_NAMES[d.getDay()];
+    if (name === "daypart") return DAYPART_NAMES[daypartIndex(d.getHours())];
+    if (name === "time") return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    return all;
+  });
+}
+
+/**
+ * 一处文案的所有候选解析结果。带 `{daypart}` 时把所有时段都作为候选，
+ * 这样刚好跨过时段边界（比如 18:00 前后）时，样式仍然贴得上。
+ * @param {string} text 原始模板。
+ * @param {Date} now 当前时间。
+ * @returns {string[]} 候选文案（第一项是当前时间的解析结果）。
+ */
+function templateVariants(text, now) {
+  var d = now instanceof Date ? now : new Date();
+  var base = resolveTemplate(text, d);
+  if (typeof text !== "string" || text.indexOf("{daypart}") < 0) return [base];
+  var out = [base];
+  for (var i = 0; i < DAYPART_NAMES.length; i += 1) {
+    var variant = resolveTemplate(text.split("{daypart}").join(DAYPART_NAMES[i]), d);
+    if (out.indexOf(variant) < 0) out.push(variant);
+  }
+  return out;
+}
+
+/**
+ * 把一处文案编译成若干"待匹配行"（每个时间候选一项，含多行分段）。
+ * @param {string} key "greeting" 或 "signOff"。
+ * @param {string} rawText 配置里的原始文案。
+ * @param {Date} now 当前时间。
+ * @returns {Array} [{ key, text, norm, fold, segments, multi }]
+ */
+function compileWantedLine(key, rawText, now) {
+  var variants = templateVariants(rawText, now);
+  var out = [];
+  for (var i = 0; i < variants.length; i += 1) {
+    var text = String(variants[i]).trim();
+    if (text.length === 0) continue;
+    var segments = [];
+    var parts = text.split(/\r?\n/);
+    for (var s = 0; s < parts.length; s += 1) {
+      var seg = parts[s].trim();
+      if (seg.length > 0) segments.push({ text: seg, norm: normalizeFixedLine(seg), fold: foldFixedLine(seg) });
+    }
+    out.push({
+      key: key,
+      text: text,
+      norm: normalizeFixedLine(text),
+      fold: foldFixedLine(text),
+      segments: segments,
+      multi: segments.length > 1
+    });
+  }
+  return out;
+}
+
 
 /**
  * 让我回复正文里的开场/收尾行也带上样式（字号/字重/颜色/动效/图片）。
@@ -1884,19 +2478,71 @@ function installChatStyler(ctx) {
 
   function wantedLines() {
     var list = [];
+    var now = new Date();
     [["greeting", state.config.greeting], ["signOff", state.config.signOff]].forEach(function (pair) {
       var text = typeof pair[1].text === "string" ? pair[1].text.trim() : "";
-      if (text.length > 0) {
-        list.push({ key: pair[0], text: text, norm: normalizeFixedLine(text), loose: looseFixedLine(text) });
-      }
+      if (text.length === 0) return;
+      var compiled = compileWantedLine(pair[0], text, now);
+      for (var i = 0; i < compiled.length; i += 1) list.push(compiled[i]);
     });
+    // 旧文案兼容表：只参与页面匹配渲染，不写进提示词（模型看不到）
+    var legacy = state.config.legacyLines;
+    if (Array.isArray(legacy)) {
+      for (var l = 0; l < legacy.length; l += 1) {
+        var entry = legacy[l];
+        if (entry === null || typeof entry !== "object" || typeof entry.text !== "string") continue;
+        var items = compileWantedLine(entry.style === "signOff" ? "signOff" : "greeting", entry.text, now);
+        for (var m = 0; m < items.length; m += 1) list.push(items[m]);
+      }
+    }
     return list;
   }
 
+  /** 两行文案是否其实是同一句（此时只能按"位置"区分开场/收尾）。 */
+  function sameLineTexts() {
+    var g = typeof state.config.greeting.text === "string" ? state.config.greeting.text.trim() : "";
+    var s = typeof state.config.signOff.text === "string" ? state.config.signOff.text.trim() : "";
+    if (g.length === 0 || s.length === 0) return false;
+    return foldFixedLine(g) === foldFixedLine(s);
+  }
+
   /** 候选块/固定行节点的选择器（宿主消息块与 Markdown 渲染层）。 */
-  var BLOCK_SELECTOR = '[class*="markdown"], [class*="flowItem"], [class*="message"], [class*="Message"]';
+  var BLOCK_SELECTOR = '[data-chat-flow-kind], [class*="markdown"], [class*="flowItem"], [class*="message"], [class*="Message"]';
   /** 固定行候选标签：标题也收进来（模型偶尔把固定行写成 # 标题），行内代码同理。 */
   var LINE_TAGS = "p, li, div, span, h1, h2, h3, h4, h5, h6, code";
+
+  /**
+   * 宿主 flow 项里"不是助手正文"的类型（宿主会给每个 flow 项打 data-chat-flow-kind）。
+   * 只列确定的：认不出的类型一律按"允许"处理，这样换 DSH 版本也不会整片失效。
+   */
+  var NON_ASSISTANT_KINDS = {
+    user: 1, steering: 1, "tool-result": 1, "tool-call": 1, "system-message": 1,
+    context: 1, "input-message": 1, "turn-process": 1, "turn-tail": 1, "turn-error": 1,
+    "turn-max-tokens": 1, "request-prompt": 1, reasoning: 1, compaction: 1, command: 1,
+    boundary: 1, skill: 1, snapshot: 1, "model-retry": 1
+  };
+
+  /**
+   * 这个块是不是"助手的正文"。
+   * 打开 onlyAssistant（默认）后，用户消息、工具结果、思考面板一律不贴样式——
+   * 否则你把自己消息里引用的那句开场语、或工具输出里的同一句话，也会被贴上样式。
+   * @param {Element} block 候选块。
+   * @returns {boolean} true = 可以贴样式。
+   */
+  function isAssistantBlock(block) {
+    if (state.config.onlyAssistant === false) return true;
+    var node = block;
+    var kind = null;
+    while (node !== null && node !== undefined && kind === null) {
+      if (typeof node.getAttribute === "function") {
+        var value = node.getAttribute("data-chat-flow-kind");
+        if (typeof value === "string" && value.length > 0) kind = value;
+      }
+      node = node.parentElement;
+    }
+    if (kind === null) return true;
+    return NON_ASSISTANT_KINDS[kind] !== 1;
+  }
 
   /**
    * 每个消息块的处理缓存：记下上次的"便宜签名"与匹配结果。
@@ -1908,6 +2554,8 @@ function installChatStyler(ctx) {
   var dirtyBlocks = new Set();
   /** 单次扫描最多重扫多少个块（从最新往旧数），其余块只复用上一次的结论。 */
   var SCAN_BUDGET = 300;
+  /** 诊断数据：设置页的"诊断"区与悬停提示会读它（模块级，见 stylerStats）。 */
+  var stats = stylerStats;
 
   /** 便宜的内容签名：子元素数 + 文本长度。 */
   function signatureOf(block) {
@@ -1933,23 +2581,32 @@ function installChatStyler(ctx) {
   }
 
   function decorate() {
+    var startedAt = Date.now();
     var list = wantedLines();
-    if (list.length === 0) return 0;
+    if (list.length === 0) {
+      stats.runs += 1;
+      stats.lastMs = 0;
+      stats.lastAt = startedAt;
+      return 0;
+    }
     var scope = document.querySelector('[class*="scrollBody"]') || document.querySelector('[class*="conversation"]') || document.body;
     // 按「消息块」作用域判定，而不是整段对话一起判定。
     // 原因：一条回复在 DOM 里可能拆成多个块（思考面板 + 正文），且思考面板里也可能引用同样的文字；
     // 整段一起判定时，先出现的块会把开场/收尾两类名额各占一个，后面的块就拿不到正确的样式，
-    // 表现就是「结束语用的是开场语的样式」。因此：逐块处理，每块内第一条=开场、最后一条=收尾。
-    // 屏蔽块：思考/推理面板（reasoning/thinking）与本插件自己的面板，避免把思考文本当成正文固定行。
+    // 表现就是「结束语用的是开场语的样式」。因此：逐块处理，块内按文案身份分配样式。
+    // 另外：打开 onlyAssistant 时，只处理宿主的助手 flow 项（用户消息、工具结果、思考面板都跳过）。
     var blocks = scope.querySelectorAll(BLOCK_SELECTOR);
     var used = [];
     var total = 0;
     var budget = SCAN_BUDGET;
+    var scanned = 0;
+    var skipped = 0;
     // 从最新往旧走：长会话里新的消息才是屏幕上看得见的，预算要先给它们。
     for (var b = blocks.length - 1; b >= 0; b -= 1) {
       var block = blocks[b];
       if (isFixedLineExcluded(block)) continue;
       if (typeof block.querySelector === "function" && block.querySelector(BLOCK_SELECTOR) !== null) continue;
+      if (!isAssistantBlock(block)) { skipped += 1; continue; }
       var sig = signatureOf(block);
       var cached = blockState.get(block);
       var dirty = cached === undefined || dirtyBlocks.has(block) || cached.sig !== sig;
@@ -1968,10 +2625,24 @@ function installChatStyler(ctx) {
         continue;
       }
       budget -= 1;
+      scanned += 1;
       var text = block.textContent || "";
       var related = false;
       for (var q = 0; q < list.length; q += 1) {
         if (text.indexOf(list[q].norm) >= 0 || text.indexOf(list[q].text) >= 0) { related = true; break; }
+      }
+      if (!related) {
+        // 宽松/近似档下，标点或空白被改写过的行不一定能在原文里直接搜到，再按折叠文本找一遍。
+        // 近似档（fuzzy）可能整句只差一两个字，用整句去找必然找不到，所以只拿前几个字当探针。
+        var folded = foldFixedLine(text);
+        for (var f = 0; f < list.length; f += 1) {
+          var target = list[f];
+          if (target.fold.length === 0) continue;
+          var probe = state.config.matchMode === "fuzzy"
+            ? target.fold.slice(0, Math.min(6, target.fold.length))
+            : target.fold;
+          if (folded.indexOf(probe) >= 0) { related = true; break; }
+        }
       }
       if (!related) {
         blockState.set(block, { sig: sig, parts: [] });
@@ -1993,6 +2664,13 @@ function installChatStyler(ctx) {
       for (var k = 0; k < CHAT_CLASSES.length; k += 1) stale[s].classList.remove(CHAT_CLASSES[k]);
       marks.delete(stale[s]);
     }
+    stats.runs += 1;
+    stats.lastMs = Date.now() - startedAt;
+    stats.lastAt = Date.now();
+    stats.blocks = blocks.length;
+    stats.scanned = scanned;
+    stats.matched = total;
+    stats.skippedNonAssistant = skipped;
     return total;
   }
 
@@ -2003,62 +2681,116 @@ function installChatStyler(ctx) {
   }
 
   /**
-   * 在一个消息块内收集固定行：叶子节点 + 文本归一化后相等 + 不在排除区域内。
+   * 在一个消息块内收集固定行。
+   * 1) 单个叶子节点的文本命中某条待匹配行；
+   * 2) 配置里写了多行时，相邻的若干叶子节点拼起来命中同一条（宿主可能把换行渲染成两个 <p>）。
+   * 命中后按"只保留最外层"去重——`<p><strong>行</strong></p>`、标题里的 `<code>` 都只留外层那一个。
    * @param {Element} block 消息块。
    * @param {Array} list wantedLines() 的结果。
    * @returns {Array} 按文档顺序的 [{el, key}]。
    */
   function collectFixedLines(block, list) {
+    var mode = state.config.matchMode;
     var nodes = block.querySelectorAll(LINE_TAGS);
     var found = [];
     var matched = new Set();
-    var loose = state.config.looseMatch !== false;
+    var leaves = [];
     for (var i = 0; i < nodes.length && i < 1500; i += 1) {
       var el = nodes[i];
       if (el.childElementCount > 1) continue;
       if (isFixedLineExcluded(el)) continue;
       var raw = el.textContent || "";
-      var text = normalizeFixedLine(raw);
-      if (text.length === 0) continue;
-      var key = null;
-      for (var k = 0; k < list.length; k += 1) {
-        if (text === list[k].norm || (loose && looseFixedLine(raw) === list[k].loose)) { key = list[k].key; break; }
-      }
-      if (key === null) continue;
-      // 同一行常常同时命中外层与内层（`<p><strong>行</strong></p>`、标题里的 `<code>`）：
-      // 只留最外层那一个。否则一个开场行会同时被当成"开场 + 收尾"两条，两类样式互相顶掉。
-      var ancestor = el.parentElement;
-      var nested = false;
-      while (ancestor !== null && ancestor !== block) {
-        if (matched.has(ancestor)) { nested = true; break; }
-        ancestor = ancestor.parentElement;
-      }
-      if (nested) continue;
-      matched.add(el);
-      found.push({ el: el, key: key });
+      if (normalizeFixedLine(raw).length === 0) continue;
+      leaves.push({ el: el, raw: raw });
     }
+    // 1) 单节点命中
+    for (var n = 0; n < leaves.length; n += 1) {
+      var item = leaves[n];
+      var hit = null;
+      for (var k = 0; k < list.length; k += 1) {
+        if (matchLineText(item.raw, list[k], mode)) { hit = list[k]; break; }
+      }
+      if (hit === null) continue;
+      if (hasMatchedAncestor(item.el, block, matched)) continue;
+      matched.add(item.el);
+      found.push({ el: item.el, key: hit.key });
+    }
+    // 2) 多行命中：连续的叶子节点依次等于该行的各段
+    for (var w = 0; w < list.length; w += 1) {
+      var wanted = list[w];
+      if (wanted.multi !== true) continue;
+      var need = wanted.segments.length;
+      for (var start = 0; start + need <= leaves.length; start += 1) {
+        var ok = true;
+        for (var seg = 0; seg < need; seg += 1) {
+          var leaf = leaves[start + seg];
+          if (matched.has(leaf.el) || hasMatchedAncestor(leaf.el, block, matched)) { ok = false; break; }
+          var want = wanted.segments[seg];
+          if (normalizeFixedLine(leaf.raw) !== want.norm && foldFixedLine(leaf.raw) !== want.fold) { ok = false; break; }
+        }
+        if (!ok) continue;
+        for (var take = 0; take < need; take += 1) {
+          matched.add(leaves[start + take].el);
+          found.push({ el: leaves[start + take].el, key: wanted.key });
+        }
+        break;
+      }
+    }
+    found.sort(function (a, b) {
+      if (a.el === b.el) return 0;
+      var position = typeof a.el.compareDocumentPosition === "function" ? a.el.compareDocumentPosition(b.el) : 0;
+      return (position & 4) === 4 ? -1 : 1;
+    });
     return found;
   }
 
   /**
-   * 把匹配到的固定行按位置分配样式：第一条是开场、最后一条是收尾。
-   * 样式一律按 key 现取配置行（greeting/signOff 各取各的），这样两行文字相同时
-   * 收尾行拿到的仍是收尾那一行的字号/颜色/动效，而不是开场行的。
-   * 只有一条时（例如开场与收尾文字相同且这块只匹配到一行）样式只能有一份，此时按开场显示。
+   * 该元素是否有祖先已经被标成固定行（用于"只保留最外层"）。
+   * @param {Element} el 元素。
+   * @param {Element} block 所在块。
+   * @param {Set} matched 已命中元素集合。
+   * @returns {boolean} true = 有祖先已命中，本元素跳过。
+   */
+  function hasMatchedAncestor(el, block, matched) {
+    var ancestor = el.parentElement;
+    while (ancestor !== null && ancestor !== block) {
+      if (matched.has(ancestor)) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  }
+
+  /**
+   * 按"文案身份"分配样式：命中开场文案的用开场样式、命中收尾文案的用收尾样式。
+   * 这样一条回复被工具调用拆成多个块时（开场在一个块、收尾在另一个块）也不会串样式。
+   * 只有两行文案其实是同一句时才退回"按位置"：本块第一条=开场、最后一条=收尾。
    * @param {Array} found 按文档顺序排列的匹配结果 [{el, key}]。
    * @param {Array} used 已处理元素收集数组，供清理旧标记使用。
    * @returns {Array} 本块最终生效的 [{el, key}]，供块级缓存复用。
    */
   function applyFixedLineParts(found, used) {
     if (found.length === 0) return [];
-    var first = found[0];
-    var last = found[found.length - 1];
-    arrangeLinePart(first.el, "greeting");
-    used.push(first.el);
-    if (last.el === first.el) return [{ el: first.el, key: "greeting" }];
-    arrangeLinePart(last.el, "signOff");
-    used.push(last.el);
-    return [{ el: first.el, key: "greeting" }, { el: last.el, key: "signOff" }];
+    var identical = sameLineTexts();
+    var out = [];
+    var seen = new Set();
+    for (var i = 0; i < found.length; i += 1) {
+      var el = found[i].el;
+      var key = found[i].key;
+      if (identical) {
+        if (found.length === 1) key = "greeting";
+        else if (i === 0) key = "greeting";
+        else if (i === found.length - 1) key = "signOff";
+        else key = "greeting";
+      }
+      if (seen.has(el)) continue;
+      seen.add(el);
+      out.push({ el: el, key: key });
+    }
+    for (var q = 0; q < out.length; q += 1) {
+      arrangeLinePart(out[q].el, out[q].key);
+      used.push(out[q].el);
+    }
+    return out;
   }
 
   /**
@@ -2164,6 +2896,12 @@ function installChatStyler(ctx) {
  * 客户端服务可能晚于本插件出现，因此不在 apply 时缓存服务对象，只缓存 ctx。
  */
 var pluginCtx = null;
+
+/** 对话贴样式器的诊断数据（设置页"诊断"区读取；installChatStyler 会直接写这个对象）。 */
+var stylerStats = {
+  runs: 0, lastMs: 0, lastAt: 0, blocks: 0, scanned: 0, matched: 0,
+  skippedNonAssistant: 0, legacyCount: 0, lastError: ""
+};
 
 /**
  * 注册设置行、设置页与输入框上方的卡片。

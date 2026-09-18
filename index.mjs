@@ -66,6 +66,8 @@ const FILLS = ['none', 'faint', 'theme', 'solid']
 const SHADOWS = ['none', 'soft', 'medium', 'strong', 'glow']
 const CAPS = ['none', 'upper', 'lower']
 const WEIGHTS = [400, 500, 600, 700, 800]
+/** 匹配模式（与浏览器半保持同一套取值）。 */
+const MATCH_MODES = ['exact', 'loose', 'fuzzy']
 /** 颜色字段只允许 #rgb / #rrggbb / #rrggbbaa，避免任意字符串进样式。 */
 const COLOR_RE = /^#[0-9a-fA-F]{3,8}$/
 
@@ -84,6 +86,7 @@ const DEFAULT_LINE = {
   fontSize: 14,
   fontWeight: 600,
   color: '',
+  colorDark: '',
   animation: 'none',
   animSpeed: 1,
   shape: 'none',
@@ -91,8 +94,10 @@ const DEFAULT_LINE = {
   padY: 5,
   fill: 'none',
   bgColor: '',
+  bgColorDark: '',
   borderWidth: 0,
   borderColor: '',
+  borderColorDark: '',
   shadow: 'none',
   letterSpacing: 0,
   caps: 'none',
@@ -104,8 +109,12 @@ const DEFAULT_CONFIG = {
   signOff: Object.assign({}, DEFAULT_LINE, { text: '✅ 以上，随时叫我。' }),
   warnPercent: 70,
   criticalPercent: 85,
-  /** 宽松匹配：正文里的固定行首尾多出引号/句号/星号，或大小写不同，也照样贴上样式。 */
-  looseMatch: true,
+  /** 匹配模式：exact 逐字 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
+  matchMode: 'loose',
+  /** 只给助手的回复贴样式（用户消息、工具结果、思考面板都不贴）。 */
+  onlyAssistant: true,
+  /** 旧文案兼容表：只影响页面渲染，不写进提示词。 */
+  legacyLines: [],
 }
 
 function clampInt(value, min, max, fallback) {
@@ -222,6 +231,7 @@ function sanitizeLine(raw, fallback) {
     fontSize: clampInt(base.fontSize, 10, 40, fallback.fontSize),
     fontWeight: snapWeight(base.fontWeight, fallback.fontWeight),
     color: sanitizeColor(base.color, fallback.color),
+    colorDark: sanitizeColor(base.colorDark, fallback.colorDark),
     animation,
     // 动效倍速 / 形状 / 填充 / 边框 / 阴影 / 字距 / 大小写 / 斜体（只影响页面显示）
     animSpeed: clampInt(base.animSpeed, 1, 4, fallback.animSpeed),
@@ -230,13 +240,29 @@ function sanitizeLine(raw, fallback) {
     padY: clampInt(base.padY, 0, 24, fallback.padY),
     fill: pickEnum(base.fill, FILLS, fallback.fill),
     bgColor: sanitizeColor(base.bgColor, fallback.bgColor),
+    bgColorDark: sanitizeColor(base.bgColorDark, fallback.bgColorDark),
     borderWidth: clampInt(base.borderWidth, 0, 6, fallback.borderWidth),
     borderColor: sanitizeColor(base.borderColor, fallback.borderColor),
+    borderColorDark: sanitizeColor(base.borderColorDark, fallback.borderColorDark),
     shadow: pickEnum(base.shadow, SHADOWS, fallback.shadow),
     letterSpacing: clampInt(base.letterSpacing, -2, 12, fallback.letterSpacing),
     caps: pickEnum(base.caps, CAPS, fallback.caps),
     italic: base.italic === true,
   }
+}
+
+/** 旧文案兼容表：只影响页面渲染（不写进提示词），最多 30 条。 */
+function sanitizeLegacyLines(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (let i = 0; i < raw.length && out.length < 30; i += 1) {
+    const item = raw[i]
+    if (item === null || typeof item !== 'object') continue
+    const text = typeof item.text === 'string' ? item.text.slice(0, TEXT_LIMIT) : ''
+    if (text.trim().length === 0) continue
+    out.push({ text, style: item.style === 'signOff' ? 'signOff' : 'greeting' })
+  }
+  return out
 }
 
 /** 把任意输入归一化成合法配置；缺失字段回落到默认值；兼容旧的字符串写法。 */
@@ -246,12 +272,18 @@ function normalize(raw) {
   const source = legacy ? { greeting: { text: base.greeting }, signOff: { text: base.signOff } } : base
   const warnPercent = clampInt(base.warnPercent, 1, 99, DEFAULT_CONFIG.warnPercent)
   const criticalPercent = clampInt(base.criticalPercent, 2, 100, DEFAULT_CONFIG.criticalPercent)
+  // matchMode 是 1.2.0 的新字段；旧的布尔 looseMatch 仍能读（false = 逐字相同）
+  const matchMode = base.matchMode === undefined
+    ? (base.looseMatch === false ? 'exact' : 'loose')
+    : pickEnum(base.matchMode, MATCH_MODES, 'loose')
   return {
     greeting: sanitizeLine(source.greeting, DEFAULT_CONFIG.greeting),
     signOff: sanitizeLine(source.signOff, DEFAULT_CONFIG.signOff),
     warnPercent,
     criticalPercent: Math.max(warnPercent + 1, criticalPercent),
-    looseMatch: base.looseMatch !== false,
+    matchMode,
+    onlyAssistant: base.onlyAssistant !== false,
+    legacyLines: sanitizeLegacyLines(base.legacyLines),
   }
 }
 
@@ -328,14 +360,58 @@ function serveAsset(req, res, name) {
   }
 }
 
+/* ─── 动态变量（与浏览器半保持同一套规则） ───────────────────────────── */
+
+const WEEKDAY_NAMES = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
+const DAYPART_NAMES = ['凌晨好', '早上好', '上午好', '中午好', '下午好', '晚上好', '夜深了']
+
+function daypartIndex(hour) {
+  if (hour < 5) return 6
+  if (hour < 8) return 0
+  if (hour < 11) return 1
+  if (hour < 13) return 3
+  if (hour < 18) return 4
+  if (hour < 23) return 5
+  return 6
+}
+
+function pad2(value) {
+  return (value < 10 ? '0' : '') + value
+}
+
+/**
+ * 解析文案里的动态变量：`{date}` `{year}` `{month}` `{day}` `{weekday}` `{daypart}` `{time}`。
+ * 不认识的 `{xxx}` 原样保留。
+ * @param text - 含变量的文案。
+ * @param now - 当前时间。
+ * @returns 解析后的文案。
+ */
+function resolveTemplate(text, now) {
+  if (typeof text !== 'string' || text.indexOf('{') < 0) return text
+  const d = now instanceof Date ? now : new Date()
+  return text.replace(/\{([a-zA-Z]+)\}/g, (all, rawName) => {
+    const key = String(rawName).toLowerCase()
+    if (key === 'date') return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+    if (key === 'year') return String(d.getFullYear())
+    if (key === 'month') return pad2(d.getMonth() + 1)
+    if (key === 'day') return pad2(d.getDate())
+    if (key === 'weekday') return WEEKDAY_NAMES[d.getDay()]
+    if (key === 'daypart') return DAYPART_NAMES[daypartIndex(d.getHours())]
+    if (key === 'time') return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    return all
+  })
+}
+
 /**
  * 模型可见的规则文本；两行的文本都为空时返回空串（该段不渲染）。
  * 图片与字号/颜色/动效只影响页面呈现，因此不进入提示词。
+ * 动态变量在这里就解析成具体文字，模型与页面看到的是同一句（页面在渲染时也按同一规则解析）。
  */
 function ruleText() {
   const config = readConfig()
-  const greeting = config.greeting.text.trim()
-  const signOff = config.signOff.text.trim()
+  const now = new Date()
+  const greeting = resolveTemplate(config.greeting.text, now).trim()
+  const signOff = resolveTemplate(config.signOff.text, now).trim()
   if (greeting.length === 0 && signOff.length === 0) return ''
   const lines = ['开场与收尾（本会话强制要求 / mandatory for every reply）：']
   if (greeting.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样开头：${greeting}`)
