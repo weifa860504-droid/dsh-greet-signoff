@@ -41,7 +41,12 @@ var ANIMATIONS = [
   { value: "float", label: "漂浮", loop: true, duration: 2.6 },
   { value: "spin", label: "旋转", loop: true, duration: 3.2 },
   { value: "wave", label: "波浪", loop: true, duration: 2.4 },
-  { value: "rainbow", label: "彩虹流动", loop: true, duration: 4 }
+  { value: "rainbow", label: "彩虹流动", loop: true, duration: 4 },
+  /* 逐字动效：给每个字单独包一层 span，按顺序错开播放（预览与对话里都会逐字动） */
+  { value: "charbounce", label: "逐字跳动", loop: true, duration: 0.9 },
+  { value: "charwave", label: "逐字波浪", loop: true, duration: 1.6 },
+  { value: "chartype", label: "逐字打字机", loop: true, duration: 3.2 },
+  { value: "charrainbow", label: "逐字彩虹", loop: true, duration: 3.4 }
 ];
 /** 形状预设：胶囊就是左右半圆（padding 撑起来后即"药丸/胶囊"） */
 var SHAPES = [
@@ -96,6 +101,42 @@ function lineClassOf(line, base) {
 }
 
 var WEIGHTS = [400, 500, 600, 700, 800];
+
+/** 需要"逐字包一层 span"的动效（其余动效只作用于整行）。 */
+var PER_CHAR_ANIMATIONS = ["charbounce", "charwave", "chartype"];
+
+/**
+ * 这个动效是不是"逐字"的（需要给每个字单独包 span 才能错开播放）。
+ * @param {string} value 动效名。
+ * @returns {boolean} true = 逐字动效。
+ */
+function isPerCharAnimation(value) {
+  return PER_CHAR_ANIMATIONS.indexOf(value) !== -1;
+}
+
+/**
+ * 把文本切成"字"：按码位切，但把变体选择符（U+FE0F）、零宽连接符（U+200D）、组合符号与肤色修饰符
+ * 并入前一个字，这样 emoji（如 👑、💰、👨‍👩‍👧）不会被拆成两半而显示错乱。
+ * @param {string} text 原始文本。
+ * @returns {string[]} 每个元素是一个"字"（可能含多个码位）。
+ */
+function splitGraphemes(text) {
+  var chars = Array.from(String(text));
+  var out = [];
+  for (var i = 0; i < chars.length; i += 1) {
+    var ch = chars[i];
+    var cp = ch.codePointAt(0);
+    var isJoiner = cp === 0xfe0f || cp === 0x200d || (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1f3fb && cp <= 0x1f3ff);
+    var prev = out.length > 0 ? out[out.length - 1] : "";
+    if (out.length > 0 && (isJoiner || prev.charCodeAt(prev.length - 1) === 0x200d)) {
+      out[out.length - 1] = prev + ch;
+      continue;
+    }
+    out.push(ch);
+  }
+  return out;
+}
+
 var COLORS = ["", "#d93026", "#e0721a", "#1a9e6b", "#2f6fed", "#8b5cf6", "#6b7280"];
 var EMOJIS = ["👋", "✅", "⚠️", "🚨", "🎉", "💡", "📌", "🤝", "🔔", "🌟", "🙌", "😊", "🚀", "📎", "✨", "🧭", "☕", "🎯", "💬", "📝"];
 
@@ -383,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.5.0";
+var CLIENT_VERSION = "1.6.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -670,6 +711,17 @@ function css() {
     "@keyframes gs-rainbow{0%{filter:hue-rotate(0)}100%{filter:hue-rotate(360deg)}}",
     "@keyframes gs-shine{0%{background-position:-140% 0}100%{background-position:240% 0}}",
     "@keyframes gs-sweep{0%{background-position:0% 50%}100%{background-position:200% 50%}}",
+    /* ── 逐字动效：字与字之间用 --gs-i 拉开时间差（速度倍率也一起生效） ── */
+    "@keyframes gs-charbounce{0%,100%{transform:translateY(0)}25%{transform:translateY(-7px)}45%{transform:translateY(0)}}",
+    "@keyframes gs-charwave{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-4px) rotate(-6deg)}}",
+    "@keyframes gs-charfade{0%{opacity:0}10%{opacity:1}78%{opacity:1}100%{opacity:0}}",
+    ".gs-char{display:inline-block;white-space:pre}",
+    // 注意：animation 简写会把 animation-delay 重置为 0，所以每条规则都要把 delay 写在简写**之后**，
+    // 否则所有字会同时动（等于没有"逐字"效果）。
+    ".gs-anim-charbounce .gs-char{animation:gs-charbounce calc(.9s * var(--gs-anim-speed,1)) ease-in-out infinite;animation-delay:calc(var(--gs-i,0) * .075s / var(--gs-anim-speed,1))}",
+    ".gs-anim-charwave .gs-char{animation:gs-charwave calc(1.6s * var(--gs-anim-speed,1)) ease-in-out infinite;animation-delay:calc(var(--gs-i,0) * .075s / var(--gs-anim-speed,1))}",
+    ".gs-anim-chartype .gs-char{animation:gs-charfade calc(3.2s * var(--gs-anim-speed,1)) linear infinite;animation-delay:calc(var(--gs-i,0) * .075s / var(--gs-anim-speed,1))}",
+    ".gs-anim-charrainbow{background-image:linear-gradient(90deg,#ff6b6b,#ffd93d,#6bcb77,#4d96ff,#b983ff,#ff6b6b);background-size:320% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:gs-sweep calc(3.4s * var(--gs-anim-speed,1)) linear infinite}",
     ".gs-anim{--gs-anim-speed:1}",
     ".gs-anim-fade{animation:gs-fade calc(.6s * var(--gs-anim-speed,1)) ease both}",
     ".gs-anim-slide{animation:gs-slide calc(.6s * var(--gs-anim-speed,1)) ease both}",
@@ -1237,6 +1289,23 @@ function lineVars(line) {
   return has ? vars : undefined;
 }
 
+/**
+ * 预览里的文本内容：逐字动效时拆成一个个 `<span class="gs-char">`（用 --gs-i 拉开时间差），
+ * 其余动效就是一段普通文本。对话正文里的逐字包装由 installChatStyler 做同样的事。
+ * @param {Object} line 配置里的行对象。
+ * @returns {*} 可以直接作为 React 子节点的内容。
+ */
+function renderLineText(line) {
+  if (!isPerCharAnimation(line.animation)) return line.text;
+  return splitGraphemes(line.text).map(function (ch, index) {
+    return React.createElement("span", {
+      key: "ch" + index,
+      className: "gs-char",
+      style: { "--gs-i": String(index) }
+    }, ch);
+  });
+}
+
 function lineRender(line, label, key) {
   var children = [];
   if (typeof line.image === "string" && line.image.length > 0) {
@@ -1248,7 +1317,7 @@ function lineRender(line, label, key) {
       alt: ""
     }));
   }
-  children.push(React.createElement("span", { key: "text", style: lineStyle(line) }, line.text));
+  children.push(React.createElement("span", { key: "text", style: lineStyle(line) }, renderLineText(line)));
   return React.createElement("div", {
     key: key,
     className: lineClassOf(line, "gs-line gs-decor"),
@@ -2621,6 +2690,8 @@ function installChatStyler(ctx) {
 
   function clearMarks() {
     marks.forEach(function (part, el) {
+      // 逐字包装要先还原：否则换动效后那一行会一直停在"一堆 span"的状态
+      if (typeof el.getAttribute === "function" && el.getAttribute("data-gs-chars") === "1") unwrapChars(el);
       for (var k = 0; k < CHAT_CLASSES.length; k += 1) el.classList.remove(CHAT_CLASSES[k]);
     });
     marks.clear();
@@ -2852,7 +2923,7 @@ function installChatStyler(ctx) {
     var leaves = [];
     for (var i = 0; i < nodes.length && i < 1500; i += 1) {
       var el = nodes[i];
-      if (el.childElementCount > 1) continue;
+      if (el.childElementCount > 1 && (typeof el.getAttribute !== "function" || el.getAttribute("data-gs-chars") !== "1")) continue;
       if (isFixedLineExcluded(el)) continue;
       var raw = el.textContent || "";
       if (normalizeFixedLine(raw).length === 0) continue;
@@ -2974,7 +3045,46 @@ function installChatStyler(ctx) {
       if (name.length > 0) el.classList.add(name);
     });
     if (typeof line.image === "string" && line.image.length > 0) el.classList.add("gs-chat-img");
+    syncChars(el, line);
     marks.set(el, true);
+  }
+
+  /**
+   * 逐字动效需要给每个字单独包一层 span，才能做出"一个字接一个字"的效果。
+   * 只在**消息不再流式输出**、且元素是纯文本叶子时做：流式期间 React 会不停改写文本，
+   * 这时动它的子节点容易和 React 打架；等消息定稿后再包，效果一样但不冒险。
+   * @param {Element} el 固定行元素。
+   * @param {Object} line 这一行的配置。
+   */
+  function syncChars(el, line) {
+    var want = isPerCharAnimation(line.animation);
+    var wrapped = typeof el.getAttribute === "function" && el.getAttribute("data-gs-chars") === "1";
+    if (!want) {
+      if (wrapped) unwrapChars(el);
+      return;
+    }
+    if (wrapped) return;
+    if (typeof el.closest === "function" && el.closest("[data-streaming]") !== null) return;
+    if (typeof el.querySelector === "function" && el.querySelector("img") !== null) return;
+    var parts = splitGraphemes(el.textContent || "");
+    if (parts.length === 0 || parts.length > 60) return;
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < parts.length; i += 1) {
+      var span = document.createElement("span");
+      span.className = "gs-char";
+      span.style.setProperty("--gs-i", String(i));
+      span.textContent = parts[i];
+      frag.appendChild(span);
+    }
+    el.textContent = "";
+    el.appendChild(frag);
+    el.setAttribute("data-gs-chars", "1");
+  }
+
+  /** 把逐字包装还原成一段纯文本（切换动效或清理标记时用）。 */
+  function unwrapChars(el) {
+    el.textContent = el.textContent;
+    if (typeof el.removeAttribute === "function") el.removeAttribute("data-gs-chars");
   }
 
   function schedule() {
@@ -3131,7 +3241,10 @@ module.exports = {
     rampColor: rampColor,
     barScale: barScale,
     lineCssDecls: lineCssDecls,
-    matchModeLabel: matchModeLabel
+    matchModeLabel: matchModeLabel,
+    isPerCharAnimation: isPerCharAnimation,
+    splitGraphemes: splitGraphemes,
+    renderLineText: renderLineText
   }
 };
 return module.exports; } });

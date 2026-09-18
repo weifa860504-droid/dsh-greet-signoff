@@ -60,6 +60,8 @@ const ANIMATIONS = [
   'none', 'fade', 'slide', 'slideUp', 'slideRight', 'drop', 'blur', 'zoom', 'flip', 'unfold',
   'sweep', 'shine', 'pulse', 'heartbeat', 'glow', 'neon', 'blink', 'bounce', 'shake', 'wobble',
   'swing', 'tilt', 'float', 'spin', 'wave', 'rainbow',
+  // 逐字动效（浏览器半会给每个字单独包一层 span，按顺序错开播放）
+  'charbounce', 'charwave', 'chartype', 'charrainbow',
 ]
 const SHAPES = ['none', 'pill', 'round', 'soft', 'rect', 'card', 'tag', 'underline', 'highlight', 'blockquote']
 const FILLS = ['none', 'faint', 'theme', 'solid']
@@ -221,11 +223,22 @@ function sanitizeColor(value, fallback) {
   return COLOR_RE.test(value) ? value.slice(0, 12) : fallback
 }
 
+/**
+ * 动效名：已知的名字直接用；未知但**形状合法**的名字也保留。
+ * 为什么要保留未知值：浏览器半可能比宿主半新（比如刚加了新动效、插件还没重启），
+ * 若在这里一律回落到默认，用户刚选的新动效一保存就被悄悄改回"无"。只挡明显不合法的输入。
+ */
+const ANIMATION_RE = /^[a-z][a-zA-Z]{2,24}$/
+
+function pickAnimation(value, fallback) {
+  if (typeof value !== 'string') return fallback
+  if (ANIMATIONS.indexOf(value) >= 0) return value
+  return ANIMATION_RE.test(value) ? value : fallback
+}
+
 function sanitizeLine(raw, fallback) {
   const base = raw !== null && typeof raw === 'object' ? raw : {}
-  const animation = typeof base.animation === 'string' && ANIMATIONS.indexOf(base.animation) >= 0
-    ? base.animation
-    : fallback.animation
+  const animation = pickAnimation(base.animation, fallback.animation)
   return {
     text: typeof base.text === 'string' ? base.text.slice(0, TEXT_LIMIT) : fallback.text,
     image: sanitizeImage(base.image, fallback.image),

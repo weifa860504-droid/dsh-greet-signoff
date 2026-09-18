@@ -41,7 +41,16 @@ function makeStubs() {
     matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop }),
     dispatchEvent: noop,
   }
-  const requireStub = () => ({ createElement: () => ({}), memo: (c) => c, useState: () => [null, noop], useEffect: noop, useRef: () => ({ current: null }) })
+  const requireStub = () => ({
+    createElement: (type, props, ...children) => ({
+      type,
+      props: Object.assign({}, props, { children: children.length <= 1 ? children[0] : children }),
+    }),
+    memo: (c) => c,
+    useState: () => [null, noop],
+    useEffect: noop,
+    useRef: () => ({ current: null }),
+  })
   return { window, document, requireStub }
 }
 
@@ -61,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -181,4 +190,41 @@ test('lineSimilarity / editDistance', () => {
   assert.equal(t.editDistance('abc', 'abc'), 0)
   assert.equal(t.editDistance('', 'abc'), 3)
   assert.equal(t.editDistance('abc', 'abd'), 1)
+})
+
+test('逐字动效：哪些动效需要逐字包 span', () => {
+  assert.equal(t.isPerCharAnimation('charbounce'), true)
+  assert.equal(t.isPerCharAnimation('charwave'), true)
+  assert.equal(t.isPerCharAnimation('chartype'), true)
+  assert.equal(t.isPerCharAnimation('charrainbow'), false, '彩虹是整行渐变，不需要包 span')
+  assert.equal(t.isPerCharAnimation('bounce'), false)
+  assert.equal(t.isPerCharAnimation(''), false)
+})
+
+test('splitGraphemes：emoji 与组合符号不会被拆散', () => {
+  assert.deepEqual(t.splitGraphemes('abc'), ['a', 'b', 'c'])
+  assert.deepEqual(t.splitGraphemes(''), [])
+  // 单个 emoji（含变体选择符）算一个字
+  assert.deepEqual(t.splitGraphemes('👑'), ['👑'])
+  assert.deepEqual(t.splitGraphemes('👑💰'), ['👑', '💰'])
+  // 带 VS16 的字符不会被拆开
+  const withVs = t.splitGraphemes('❤\uFE0F好')
+  assert.equal(withVs.length, 2)
+  assert.equal(withVs[0], '❤\uFE0F')
+  // ZWJ 家族 emoji 保持成一个字
+  assert.deepEqual(t.splitGraphemes('👨\u200D👩\u200D👧'), ['👨\u200D👩\u200D👧'])
+  // 组合重音并入前一个字
+  assert.deepEqual(t.splitGraphemes('e\u0301x'), ['e\u0301', 'x'])
+})
+
+test('renderLineText：逐字动效返回多个 span，其余返回纯文本', () => {
+  const plain = t.renderLineText({ animation: 'bounce', text: '发哥' })
+  assert.equal(plain, '发哥')
+  const chars = t.renderLineText({ animation: 'charbounce', text: '发哥' })
+  assert.equal(Array.isArray(chars), true)
+  assert.equal(chars.length, 2)
+  assert.equal(chars[0].props.className, 'gs-char')
+  assert.equal(chars[0].props.style['--gs-i'], '0')
+  assert.equal(chars[1].props.style['--gs-i'], '1')
+  assert.equal(chars[1].props.children, '哥')
 })
