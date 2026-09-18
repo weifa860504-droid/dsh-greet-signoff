@@ -1,6 +1,6 @@
 {
   "name": "dsh-greet-signoff",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "开场语与收尾语：每次回复固定开场/收尾，并在上下文接近上限时提示换新会话。",
   "type": "module",
   "main": "./index.mjs",

@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.8.0";
+var CLIENT_VERSION = "1.9.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -566,8 +566,42 @@ var DEFAULTS = {
   onlyAssistant: true,
   legacyLines: [],
   // 文案池：池子非空且开关打开时，每次回复从池子里挑一句（挑的动作在宿主半，页面只负责把池子里每一句都贴上样式）。
-  pool: { enabled: false, mode: "random", greeting: [], signOff: [] }
+  pool: { enabled: false, mode: "random", greeting: [], signOff: [] },
+  // 场景：整份配置的快照（文案 + 样式 + 阈值 + 文案池），用于"工作 / 生活 / 深夜"一键整体切换。
+  scenes: { active: "", items: [] }
 };
+
+/** 场景：最多几个、名字多长（与宿主半保持一致）。 */
+var SCENES_MAX = 8;
+var SCENE_NAME_MAX = 24;
+var SCENE_ID_RE = /^[a-z0-9][a-z0-9-]{0,15}$/;
+
+/**
+ * 清洗场景表：坏数据一律丢掉，绝不因为一个场景写坏而让整份配置读不出来。
+ * 每个场景存的是"保存那一刻的整份配置"（不含 scenes 自身，避免自我嵌套）。
+ * @param raw - 任意输入。
+ * @returns {Object} { active, items }。
+ */
+function sanitizeScenes(raw) {
+  var src = raw !== null && typeof raw === "object" ? raw : {};
+  var list = Array.isArray(src.items) ? src.items : [];
+  var items = [];
+  var seen = {};
+  for (var i = 0; i < list.length && items.length < SCENES_MAX; i += 1) {
+    var item = list[i];
+    if (item === null || typeof item !== "object") continue;
+    if (typeof item.id !== "string" || !SCENE_ID_RE.test(item.id) || seen[item.id] === true) continue;
+    var name = typeof item.name === "string" ? item.name.trim() : "";
+    items.push({
+      id: item.id,
+      name: name.length > 0 ? name.slice(0, SCENE_NAME_MAX) : item.id,
+      config: normalizeCore(item.config)
+    });
+    seen[item.id] = true;
+  }
+  var active = typeof src.active === "string" && seen[src.active] === true ? src.active : "";
+  return { active: active, items: items };
+}
 
 /** 文案池：最多几句、每句多长、两种挑法（与宿主半保持一致）。 */
 var POOL_MAX = 20;
@@ -667,6 +701,14 @@ function css() {
     ".gs-pool{margin-top:10px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l2);flex-direction:column;gap:6px;display:flex}",
     ".gs-pool-head{justify-content:space-between;width:100%}",
     ".gs-pool-text{min-height:70px}",
+    // 阈值提醒条：左提示右按钮，点过「总结要点」后下面多一行小字说明
+    ".gs-dock-actions{margin-left:auto;gap:6px;display:inline-flex;align-items:center;flex:none}",
+    ".gs-dock-alert-text{min-width:0;flex:1}",
+    ".gs-dock-note{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}",
+    // 场景：一排"场景名 + 覆盖 + 删除"，窄面板会自动换行
+    ".gs-scene-list{flex-wrap:wrap;gap:6px;display:flex;margin:6px 0}",
+    ".gs-scene-item{align-items:center;gap:2px;display:inline-flex}",
+    ".gs-scene-mini{min-width:26px;padding:0 6px}",
     // 自检：结论按行排，全绿时加一条左侧绿边，一眼能看出"没事"
     ".gs-selfcheck{margin-top:8px;display:flex;flex-direction:column;gap:6px}",
     ".gs-selfcheck-lines{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:2px}",
@@ -919,6 +961,16 @@ function sanitizeLegacyLines(raw) {
 }
 
 function normalize(raw) {
+  var base = raw !== null && typeof raw === "object" ? raw : {};
+  return Object.assign({}, normalizeCore(base), { scenes: sanitizeScenes(base.scenes) });
+}
+
+/**
+ * 配置主体（不含场景表）。场景里存的快照也走这里，所以它必须与 scenes 无关，避免自我嵌套。
+ * @param raw - 任意输入。
+ * @returns {Object} 不含 scenes 的合法配置。
+ */
+function normalizeCore(raw) {
   var base = raw !== null && typeof raw === "object" ? raw : {};
   var legacy = typeof base.greeting === "string" || typeof base.signOff === "string";
   var source = legacy ? { greeting: { text: base.greeting }, signOff: { text: base.signOff } } : base;
@@ -1244,7 +1296,7 @@ function validate(draft) {
 }
 
 /** 分区的默认展开状态：高频的三个打开，低频的收起（面板不至于太长）。 */
-var FOLD_DEFAULTS = { text: true, font: true, deco: true, alert: false, legacy: false, bar: false, diag: false };
+var FOLD_DEFAULTS = { text: true, font: true, deco: true, scenes: false, alert: false, legacy: false, bar: false, diag: false };
 var FOLD_KEY = "gs.signoff.folds";
 
 /** 顶部快速跳转条：顺序就是面板里的顺序（标签短一点，一行放得下）。 */
@@ -1252,6 +1304,7 @@ var SECTION_NAV = [
   { key: "text", label: "文案" },
   { key: "font", label: "字体" },
   { key: "deco", label: "外观" },
+  { key: "scenes", label: "场景" },
   { key: "alert", label: "提醒" },
   { key: "bar", label: "进度条" },
   { key: "legacy", label: "旧文案" },
@@ -1782,10 +1835,68 @@ function Editor() {
     patchTop({ pool: Object.assign({}, poolCfg, patch) });
   }
 
+  /* ── 场景：整份配置的命名快照，一键整包切换 ─────────────────────────── */
+
+  /** 生成一个没被占用的场景 id（s1…s8）。 */
+  function nextSceneId() {
+    for (var i = 1; i <= SCENES_MAX; i += 1) {
+      var id = "s" + i;
+      if (!scenes.items.some(function (item) { return item.id === id; })) return id;
+    }
+    return "s" + Date.now().toString(36).slice(-4);
+  }
+
+  /** 把当前设置存成一个新场景，并把它设为当前场景。 */
+  function saveScene() {
+    var name = sceneName.trim();
+    if (name.length === 0) { setNotice("先给场景起个名字（如「工作」），再点「存成场景」"); return; }
+    if (scenes.items.length >= SCENES_MAX) { setNotice("场景最多 " + SCENES_MAX + " 个：先删掉一个再存"); return; }
+    var id = nextSceneId();
+    var item = { id: id, name: name.slice(0, SCENE_NAME_MAX), config: normalizeCore(draft) };
+    var next = { active: id, items: scenes.items.concat([item]) };
+    setSceneName("");
+    commit(Object.assign({}, normalizeCore(draft), { scenes: next }), false);
+    setNotice("已存下场景「" + item.name + "」：以后点它就能一键切回来");
+  }
+
+  /** 切到某个场景（整包替换当前设置）。 */
+  function applyScene(item) {
+    commit(Object.assign({}, item.config, { scenes: { active: item.id, items: scenes.items } }), false);
+    setNotice("已切到场景「" + item.name + "」");
+  }
+
+  /** 用当前设置覆盖某个场景。 */
+  function overwriteScene(item) {
+    var next = {
+      active: item.id,
+      items: scenes.items.map(function (one) {
+        return one.id === item.id ? { id: one.id, name: one.name, config: normalizeCore(draft) } : one;
+      })
+    };
+    commit(Object.assign({}, normalizeCore(draft), { scenes: next }), false);
+    setNotice("已用当前设置覆盖场景「" + item.name + "」");
+  }
+
+  /** 删掉某个场景。 */
+  function deleteScene(item) {
+    var next = {
+      active: scenes.active === item.id ? "" : scenes.active,
+      items: scenes.items.filter(function (one) { return one.id !== item.id; })
+    };
+    commit(Object.assign({}, normalizeCore(draft), { scenes: next }), false);
+    setNotice("已删除场景「" + item.name + "」");
+  }
+
   /** 自检结果（null = 还没跑过）。 */
   var selfCheckPair = React.useState(null);
   var selfCheck = selfCheckPair[0];
   var setSelfCheck = selfCheckPair[1];
+
+  /** 场景的名字输入框 + 场景表。 */
+  var sceneNamePair = React.useState("");
+  var sceneName = sceneNamePair[0];
+  var setSceneName = sceneNamePair[1];
+  var scenes = draft.scenes !== undefined && draft.scenes !== null ? draft.scenes : DEFAULTS.scenes;
 
   /**
    * 跑一遍自检：把"样式没生效/数字不对/看着怪"这类问题一次问到底，
@@ -2176,6 +2287,50 @@ function Editor() {
         ], line.italic, function (value) { setLine({ italic: value === "true" || value === true }); }, "italic")
       ])
     ),
+    section("场景（一键整包切换 · 工作 / 生活 / 深夜）", "scenes",
+      React.createElement("div", { key: "scenes-body" },
+        React.createElement("div", { className: "gs-hint" },
+          "场景 = 保存那一刻的整份设置（文案、字体、外观、阈值、文案池）。点场景名＝立刻整包切过去；✎＝用当前设置覆盖它；✕＝删除。"),
+        scenes.items.length === 0
+          ? React.createElement("div", { className: "gs-hint" }, "还没有场景：给下面起个名字（如「工作」），点「存成场景」就行。")
+          : React.createElement("div", { className: "gs-scene-list" },
+              scenes.items.map(function (item) {
+                return React.createElement("span", { className: "gs-scene-item", key: item.id },
+                  React.createElement("button", {
+                    type: "button", className: scenes.active === item.id ? "gs-btn gs-btn-on" : "gs-btn",
+                    title: "切到「" + item.name + "」（整包替换当前设置）",
+                    onClick: function () { applyScene(item); }
+                  }, item.name),
+                  React.createElement("button", {
+                    type: "button", className: "gs-btn gs-scene-mini", title: "用当前设置覆盖「" + item.name + "」",
+                    onClick: function () { overwriteScene(item); }
+                  }, "✎"),
+                  React.createElement("button", {
+                    type: "button", className: "gs-btn gs-scene-mini", title: "删除「" + item.name + "」",
+                    onClick: function () { deleteScene(item); }
+                  }, "✕")
+                );
+              })
+            ),
+        React.createElement("div", { className: "gs-inline" },
+          React.createElement("input", {
+            className: "gs-input", style: { width: 168, flex: "none" }, value: sceneName,
+            placeholder: "场景名，如 工作 / 生活 / 深夜",
+            onChange: function (event) { setSceneName(event.target.value); }
+          }),
+          React.createElement("button", { type: "button", className: "gs-btn", onClick: saveScene }, "存成场景"),
+          React.createElement("span", { className: "gs-hint" }, "最多 " + SCENES_MAX + " 个 · 当前 " + scenes.items.length + " 个")
+        )
+      ),
+      {
+        defaultOpen: false,
+        summary: scenes.items.length === 0
+          ? "未设置"
+          : (scenes.active === ""
+              ? scenes.items.length + " 个 · 未标记当前"
+              : "当前：" + ((scenes.items.filter(function (one) { return one.id === scenes.active; })[0] || {}).name || scenes.active))
+      }
+    ),
     section("上下文提醒与匹配（阈值 = 进度条颜色分界）", "alert",
       grid("alert-grid", [
         sliderCell("黄色", draft.warnPercent, 1, 99, 1, "%", function (value) { patchTop({ warnPercent: value }); }, "warn"),
@@ -2439,6 +2594,99 @@ function composerInsets(dockEl) {
   }
 }
 
+/**
+ * 阈值提醒：占用到了哪一档、该显示哪句话。
+ * 抽成纯函数是为了可测 —— 无头页面里拿不到真实的 `contextPressure` 投影，
+ * 所以"高占用时长什么样"由单测覆盖，组件只负责把它渲染出来。
+ * @param percent - 当前占用百分比（0-100）。
+ * @param warnPercent - 黄色阈值。
+ * @param criticalPercent - 红色阈值。
+ * @returns {{tone: string, line: string|null}} tone: ok/warn/critical；line: 提醒文案（ok 时为 null）。
+ */
+function contextAlert(percent, warnPercent, criticalPercent) {
+  if (typeof percent !== "number" || !isFinite(percent)) return { tone: "ok", line: null };
+  if (percent >= criticalPercent) return { tone: "critical", line: "🚨 上下文即将占满：先点「总结要点」再开新会话" };
+  if (percent >= warnPercent) return { tone: "warn", line: "⚠️ 上下文接近上限：建议先总结要点，再开新会话" };
+  return { tone: "ok", line: null };
+}
+
+/**
+ * 找输入框元素。DSH 的输入框是一段 contenteditable 的 `[role="textbox"]`，
+ * 挂在 `data-slot="conversation.composer"` 里；`[data-dsh-part="composer-input"]` 是更早版本的钩子，
+ * 现在页面上**并不存在**（2026-09-18 实测），所以这里按"钩子 → 插槽 → 可见的最后一个可编辑元素"逐级兜底。
+ * @returns {Element|null} 输入框元素。
+ */
+function findComposerEl() {
+  if (typeof document === "undefined") return null;
+  var direct = document.querySelector('[data-dsh-part="composer-input"]');
+  if (direct !== null) return direct;
+  var inSlot = document.querySelector('[data-slot="conversation.composer"] [role="textbox"], [data-slot="conversation.composer.bar"] [role="textbox"]');
+  if (inSlot !== null) return inSlot;
+  var cands = document.querySelectorAll('[role="textbox"], textarea, [contenteditable="true"]');
+  for (var i = cands.length - 1; i >= 0; i -= 1) {
+    var rect = cands[i].getBoundingClientRect();
+    if (rect.width > 40 && rect.height > 10) return cands[i];
+  }
+  return null;
+}
+
+/** 读输入框里的文字（contenteditable 用 textContent，表单元素用 value）。 */
+function readComposerText(el) {
+  if (el === null || el === undefined) return "";
+  if (typeof el.value === "string") return el.value;
+  return el.textContent || "";
+}
+
+/**
+ * 把一段文字写进输入框。DSH 的输入框是 React 完全受控的 contenteditable：
+ * 实测（2026-09-18）直接改 textContent 会被立刻回滚，所以这里按"三级递进"来：
+ * ① 选中末尾 → `execCommand('insertText')`；② 退回原生 setter + input 事件；
+ * ③ 最后**回读校验**，只有真的写进去了才返回 true —— 调用方据此决定要不要退到剪贴板。
+ * @param text - 要写入的文字。
+ * @returns {boolean} 是否真的写进了输入框。
+ */
+function fillComposer(text) {
+  var el = findComposerEl();
+  if (el === null) return false;
+  if (typeof el.focus === "function") el.focus();
+  var editable = el.getAttribute("contenteditable") !== null;
+  if (editable) {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      var selection = window.getSelection();
+      if (selection !== null) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      if (typeof document.execCommand === "function") document.execCommand("insertText", false, text);
+    } catch (error) { /* 落到下面的兜底 */ }
+  }
+  if (readComposerText(el).indexOf(text.slice(0, 6)) < 0) {
+    var tag = el.tagName;
+    var proto = tag === "TEXTAREA"
+      ? window.HTMLTextAreaElement.prototype
+      : (tag === "INPUT" ? window.HTMLInputElement.prototype : null);
+    if (proto !== null) {
+      var desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc !== undefined && typeof desc.set === "function") desc.set.call(el, text);
+      else el.value = text;
+    } else {
+      el.textContent = text;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (typeof el.focus === "function") el.focus();
+  return readComposerText(el).indexOf(text.slice(0, 6)) >= 0;
+}
+
+/**
+ * 上下文快满时，点「总结要点」要交给用户的那句话。
+ * 注意：这里是"把要求准备好"，不代替用户按回车 —— 免得误触直接把话发出去。
+ */
+var SUMMARY_PROMPT = "请把本次会话整理成一份交接摘要：目标、已确认的结论、涉及的关键文件或路径、待办与注意事项。写完后我会带着它开新会话继续。";
+
 function GreetDock(props) {
   var store = useConfig();
   var config = store.config;
@@ -2447,12 +2695,17 @@ function GreetDock(props) {
     : undefined;
   var occupancy = occupancyOf(pressure);
   var percent = occupancy === null ? 0 : occupancy.percent;
-  var tone = percent >= config.criticalPercent ? "critical" : percent >= config.warnPercent ? "warn" : "ok";
+  var alert = contextAlert(occupancy === null ? Number.NaN : occupancy.percent, config.warnPercent, config.criticalPercent);
+  var tone = alert.tone;
 
   var dockRef = React.useRef(null);
   var insetPair = React.useState(null);
   var insets = insetPair[0];
   var setInsets = insetPair[1];
+  /** 点过「总结要点」之后的提示（空串 = 没点过）。 */
+  var sumPair = React.useState("");
+  var sumNotice = sumPair[0];
+  var setSumNotice = sumPair[1];
 
   // 与输入框对齐：实时量输入框卡片相对本容器的左右缩进（hero/对话态、窗口缩放都会变）。
   React.useEffect(function () {
@@ -2526,11 +2779,7 @@ function GreetDock(props) {
   var shortText = hasReading
     ? percent + "% · 剩余 ~" + formatTokens(remaining) + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮" : "")
     : "上下文占用未知";
-  var alertLine = tone === "critical"
-    ? "🚨 上下文即将占满：请开新会话继续"
-    : tone === "warn"
-      ? "⚠️ 上下文接近上限：建议另开新会话继续"
-      : null;
+  var alertLine = alert.line;
   // 超过阈值时给一个"开新会话"按钮：客户端 uiWorkspace 服务提供 startSession()。
   // 该服务是可选的，拿不到就只显示文字提醒，不显示按钮。
   var startSession = pluginCtx !== null && typeof pluginCtx.get === "function" ? pluginCtx.get("uiWorkspace") : undefined;
@@ -2541,6 +2790,31 @@ function GreetDock(props) {
     } catch (error) {
       console.error("[greet-signoff] startSession failed", error);
     }
+  }
+
+  /**
+   * 一键把"交接摘要"要求交给用户：
+   * ① 先试着直接写进输入框（DSH 的编辑器受控，未必吃）；
+   * ② 写不进去就复制到剪贴板；③ 连剪贴板也不可用，就把整句话显示出来。
+   * 全程不自动发送 —— 免得误触把话发出去。
+   */
+  function askSummary() {
+    if (fillComposer(SUMMARY_PROMPT)) {
+      setSumNotice("已把「总结要点」写进输入框：按回车发给它，等它答完再点「开新会话」");
+      return;
+    }
+    var done = function (ok) {
+      setSumNotice(ok
+        ? "已把这句总结要求复制到剪贴板：粘到输入框发给我就行 → " + SUMMARY_PROMPT
+        : "输入框写不进去（编辑器受控），请手动把这句话发给我：" + SUMMARY_PROMPT);
+    };
+    try {
+      if (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === "function") {
+        navigator.clipboard.writeText(SUMMARY_PROMPT).then(function () { done(true); }, function () { done(false); });
+        return;
+      }
+    } catch (error) { /* 落到直接显示 */ }
+    done(false);
   }
 
   // 导航条式进度条：一辆小车随占用前进，车头实时显示百分比；
@@ -2606,6 +2880,9 @@ function GreetDock(props) {
     React.createElement("span", { className: "gs-dock-textdot", style: { background: critical ? dangerColor : color } }),
     React.createElement("span", null, shortText),
     canStartSession && alertLine !== null
+      ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: askSummary }, "总结要点")
+      : null,
+    canStartSession && alertLine !== null
       ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
       : null
   );
@@ -2626,11 +2903,17 @@ function GreetDock(props) {
       display === "text" ? textNode : barNode
     ),
     display === "text" || alertLine === null ? null : React.createElement("div", { className: "gs-dock-alert" },
-      alertLine,
-      canStartSession
-        ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
-        : null
-    )
+      React.createElement("span", { className: "gs-dock-alert-text" }, alertLine),
+      React.createElement("span", { className: "gs-dock-actions" },
+        canStartSession
+          ? React.createElement("button", { type: "button", className: "gs-dock-new", title: "把「交接摘要」的要求交给你（能写进输入框就写，否则复制到剪贴板）", onClick: askSummary }, "总结要点")
+          : null,
+        canStartSession
+          ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
+          : null
+      )
+    ),
+    sumNotice === "" ? null : React.createElement("div", { className: "gs-dock-note" }, sumNotice)
   );
 }
 
@@ -3485,11 +3768,9 @@ function reconnectStuckVisible() {
  * @returns 草稿是否存在。
  */
 function composerHasDraft() {
-  if (typeof document === "undefined") return false;
-  var el = document.querySelector('[data-dsh-part="composer-input"]');
+  var el = findComposerEl();
   if (el === null) return false;
-  if (typeof el.value === "string") return el.value.trim() !== "";
-  return (el.textContent || "").trim() !== "";
+  return readComposerText(el).trim() !== "";
 }
 
 /** 自愈统计（设置页"诊断"区读取）。 */
@@ -3580,6 +3861,33 @@ function installConnectionWatchdog(ctx) {
   }, "greet-signoff:connection-watchdog");
 }
 
+/**
+ * 调试钩子：把几个纯函数与统计挂到 window 上。
+ * 用途：① 本仓库的自动化验证（无头 Chrome 里直接调 fillComposer，验证"总结要点"到底能不能写进输入框）；
+ *      ② 出问题时在控制台敲 `__dshGreetSignoff` 就能看版本、自愈计数、输入框定位结果。
+ * 只暴露只读信息与两个无害工具函数，插件停用时整个对象会被删掉。
+ * @param ctx - 本行的插件上下文。
+ */
+function installDebugHook(ctx) {
+  if (typeof window === "undefined") return;
+  window.__dshGreetSignoff = {
+    version: CLIENT_VERSION,
+    findComposerEl: findComposerEl,
+    readComposerText: readComposerText,
+    fillComposer: fillComposer,
+    composerHasDraft: composerHasDraft,
+    contextAlert: contextAlert,
+    healStats: healStats,
+    stylerStats: stylerStats,
+    summaryPrompt: SUMMARY_PROMPT
+  };
+  ctx.effect(function () {
+    return function () {
+      try { delete window.__dshGreetSignoff; } catch (error) { window.__dshGreetSignoff = undefined; }
+    };
+  }, "greet-signoff:debug-hook");
+}
+
 /* ─── 安装 ───────────────────────────────────────────────────────────── */
 
 /**
@@ -3612,6 +3920,8 @@ function apply(ctx) {
 
   // 连接自愈要在 slots 检查之前装：即使 slots 服务没就绪，页面卡在"自动重连中"时也该能自救。
   installConnectionWatchdog(ctx);
+  // 调试钩子也提前挂：出问题时（哪怕设置页打不开）控制台里也能拿到版本与统计。
+  installDebugHook(ctx);
 
   var slots = ctx.get("slots");
   if (slots === undefined) {
@@ -3675,7 +3985,12 @@ module.exports = {
     isReconnectStuckText: isReconnectStuckText,
     sanitizePool: sanitizePool,
     sanitizePoolList: sanitizePoolList,
+    sanitizeScenes: sanitizeScenes,
+    normalizeCore: normalizeCore,
     runtimeVarRegex: runtimeVarRegex,
+    findComposerEl: findComposerEl,
+    readComposerText: readComposerText,
+    contextAlert: contextAlert,
     matchLineText: matchLineText,
     splitGraphemes: splitGraphemes,
     renderLineText: renderLineText

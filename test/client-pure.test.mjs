@@ -297,3 +297,49 @@ test('matchLineText：含运行时变量的固定行，三种模式都能命中'
   assert.equal(t.matchLineText('你好，我是助手！！', plain[0], 'exact'), false)
   assert.equal(t.matchLineText('你好，我是助手！！', plain[0], 'loose'), true)
 })
+
+test('contextAlert：阈值提醒只在该提的时候提', () => {
+  // 没有读数（NaN）→ 不提醒
+  assert.deepEqual(t.contextAlert(Number.NaN, 70, 85), { tone: 'ok', line: null })
+  assert.deepEqual(t.contextAlert(0, 70, 85), { tone: 'ok', line: null })
+  assert.deepEqual(t.contextAlert(69, 70, 85), { tone: 'ok', line: null })
+  // 到黄线
+  const warn = t.contextAlert(70, 70, 85)
+  assert.equal(warn.tone, 'warn')
+  assert.match(warn.line, /接近上限/)
+  assert.match(warn.line, /总结要点/)
+  // 到红线（优先级高于黄线）
+  const crit = t.contextAlert(85, 70, 85)
+  assert.equal(crit.tone, 'critical')
+  assert.match(crit.line, /即将占满/)
+  assert.equal(t.contextAlert(100, 70, 85).tone, 'critical')
+  // 阈值被改成 1/2 时也应即时生效
+  assert.equal(t.contextAlert(1, 1, 2).tone, 'warn')
+  assert.equal(t.contextAlert(2, 1, 2).tone, 'critical')
+})
+
+test('sanitizeScenes：场景表清洗与自我嵌套防护', () => {
+  const cfgA = { greeting: { text: '甲' }, signOff: { text: '乙' } }
+  const clean = t.sanitizeScenes({
+    active: 's1',
+    items: [
+      { id: 's1', name: ' 工作 ', config: cfgA },
+      { id: 'BAD ID', name: '非法', config: cfgA },   // id 不合法 → 丢掉
+      { id: 's1', name: '重复', config: cfgA },        // 重复 id → 丢掉
+      { id: 's2', name: '', config: cfgA }             // 空名字 → 回落 id
+    ]
+  })
+  assert.equal(clean.items.length, 2)
+  assert.equal(clean.items[0].name, '工作')
+  assert.equal(clean.items[1].name, 's2')
+  assert.equal(clean.active, 's1')
+  // active 指向不存在的场景 → 清空
+  assert.equal(t.sanitizeScenes({ active: 's9', items: [] }).active, '')
+  // 场景里的 config 会被归一化，且不会因为嵌套 scenes 而递归
+  const nested = t.sanitizeScenes({ active: '', items: [{ id: 's1', name: 'x', config: { greeting: { text: '丙' }, scenes: { items: [{ id: 's2', name: 'y' }] } } }] })
+  assert.equal(nested.items[0].config.greeting.text, '丙')
+  assert.equal(nested.items[0].config.scenes, undefined)
+  // 超过上限会被截断
+  const many = { active: '', items: Array.from({ length: 12 }, (_, i) => ({ id: 's' + i, name: 'n' + i, config: cfgA })) }
+  assert.equal(t.sanitizeScenes(many).items.length, 8)
+})

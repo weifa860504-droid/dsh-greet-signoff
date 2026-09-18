@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.8.0'
+const HOST_VERSION = '1.9.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -132,6 +132,8 @@ const DEFAULT_CONFIG = {
    * 某一行的池子为空时，那一行仍然用固定文案 —— 这样"只想让开场语轮换"也能用。
    */
   pool: { enabled: false, mode: 'random', greeting: [], signOff: [] },
+  /** 场景：整份配置的快照，用于"工作 / 生活 / 深夜"一键整体切换。 */
+  scenes: { active: '', items: [] },
 }
 
 /** 一句池子文案的清洗：去首尾空白、丢掉空行、截到上限。 */
@@ -318,8 +320,60 @@ function sanitizeLegacyLines(raw) {
   return out
 }
 
-/** 把任意输入归一化成合法配置；缺失字段回落到默认值；兼容旧的字符串写法。 */
+/** 场景：最多几个、名字多长、id 形状（场景=一整份配置的快照，用于一键整包切换）。 */
+const SCENES_MAX = 8
+const SCENE_NAME_MAX = 24
+const SCENE_ID_RE = /^[a-z0-9][a-z0-9-]{0,15}$/
+
+/**
+ * 清洗场景表。每个场景存的是"保存那一刻的整份配置"（不含 scenes 自身，避免自我嵌套）。
+ * 坏数据一律丢掉，绝不因为一个场景写坏而让整份配置读不出来。
+ * @param {unknown} raw 原始字段。
+ * @returns {{active: string, items: Array<{id: string, name: string, config: object}>}} 清洗后的场景表。
+ */
+function sanitizeScenes(raw) {
+  const src = raw !== null && typeof raw === 'object' ? raw : {}
+  const list = Array.isArray(src.items) ? src.items : []
+  const items = []
+  const seen = new Set()
+  for (const item of list) {
+    if (item === null || typeof item !== 'object') continue
+    const id = typeof item.id === 'string' && SCENE_ID_RE.test(item.id) ? item.id : undefined
+    if (id === undefined || seen.has(id)) continue
+    const trimmed = typeof item.name === 'string' ? item.name.trim() : ''
+    items.push({
+      id,
+      name: trimmed.length > 0 ? trimmed.slice(0, SCENE_NAME_MAX) : id,
+      config: normalizeCore(item.config),
+    })
+    seen.add(id)
+    if (items.length >= SCENES_MAX) break
+  }
+  const active = typeof src.active === 'string' && seen.has(src.active) ? src.active : ''
+  return { active, items }
+}
+
+/** 取配置里的场景表（缺字段时给空表）。 */
+function scenesOf(config) {
+  return config !== null && config !== undefined && config.scenes !== undefined ? config.scenes : { active: '', items: [] }
+}
+
+/**
+ * 把任意输入归一化成合法配置；缺失字段回落到默认值；兼容旧的字符串写法。
+ * @param {unknown} raw 原始输入。
+ * @returns {object} 合法配置。
+ */
 function normalize(raw) {
+  const base = raw !== null && typeof raw === 'object' ? raw : {}
+  return Object.assign({}, normalizeCore(base), { scenes: sanitizeScenes(base.scenes) })
+}
+
+/**
+ * 配置主体（不含场景表）。场景里存的每份快照也走这里，所以它必须与 scenes 无关，避免自我嵌套。
+ * @param {unknown} raw 原始输入。
+ * @returns {object} 不含 scenes 的合法配置。
+ */
+function normalizeCore(raw) {
   const base = raw !== null && typeof raw === 'object' ? raw : {}
   const legacy = typeof base.greeting === 'string' || typeof base.signOff === 'string'
   const source = legacy ? { greeting: { text: base.greeting }, signOff: { text: base.signOff } } : base
@@ -773,7 +827,10 @@ export const __test = {
   formatTokenCount,
   sanitizePool,
   sanitizePoolList,
+  sanitizeScenes,
+  scenesOf,
   normalize,
+  normalizeCore,
   ruleTextWith,
 }
 
