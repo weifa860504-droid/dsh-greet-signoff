@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.6.1";
+var CLIENT_VERSION = "1.6.2";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -607,7 +607,10 @@ function css() {
     ".gs-swatch-on{border-color:var(--dsw-alias-label-primary)}",
     ".gs-color{width:36px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:0 0}",
     ".gs-thumb{max-width:120px;max-height:40px;object-fit:contain}",
-    ".gs-btn{height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:0 0;color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}",
+    // 这个类同时用在 <button> 和 <label>（"导入配置""选择图片"是靠 label+隐藏 input 触发选文件的）。
+    // button 由 UA 样式自动把文字垂直居中、且 box-sizing:border-box；label 两者都没有，
+    // 在 .gs-actions（flex）里被块化后就成了"文字贴顶、盒子还高 2px"。所以这里自己居中 + 显式 border-box。
+    ".gs-btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:0 0;color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}",
     ".gs-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
     ".gs-btn:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
     ".gs-btn-on{border-color:transparent;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1)}",

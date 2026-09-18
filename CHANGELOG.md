@@ -3,6 +3,17 @@
 本文件记录 `dsh-greet-signoff` 的每个发布版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.6.2] - 2026-09-18
+
+### 修复
+
+- **「导入配置」「选择图片 / GIF」里的文字贴顶、不垂直居中**：这两个"按钮"其实是 `<label>`（点它触发隐藏的
+  `<input type="file">`），而 `<button>` 由浏览器 UA 样式自动把文字垂直居中、盒模型也是 `border-box`，label 两者都没有。
+  在 `.gs-actions`（flex）里 label 被块化成 flex item 后，问题就显出来了：文字中心比盒子中心**高 6px**，
+  盒子还比按钮**高 2px**（30px vs 28px，content-box 少算了两条边框）。
+  现在 `.gs-btn` 自己声明 `box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center`。
+  无头 Chrome 实测：偏移 0px、盒高 28px，与「保存并生效 / 恢复默认 / 导出配置」完全对齐。
+
 ## [1.6.1] - 2026-09-18
 
 ### 变更
