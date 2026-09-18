@@ -383,7 +383,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.3.0";
+var CLIENT_VERSION = "1.3.1";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -463,11 +463,6 @@ var DEFAULTS = {
 
 function css() {
   return [
-    ".gs-row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:flex-start;gap:8px;padding:16px 0;display:flex}",
-    ".gs-rowText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}",
-    ".gs-title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}",
-    ".gs-desc{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
-    ".gs-control{flex:none;align-items:center;gap:8px;display:inline-flex}",
     ".gs-panel{box-sizing:border-box;width:100%;padding:0 0 10px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
     ".gs-field{flex-direction:column;gap:4px;margin-top:10px;display:flex}",
     ".gs-label{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
@@ -1939,27 +1934,6 @@ function Editor() {
   return React.createElement("div", { className: "gs-panel" }, body);
 }
 
-function ConfigRow() {
-  var openPair = React.useState(false);
-  var open = openPair[0];
-  var setOpen = openPair[1];
-  return React.createElement("div", null,
-    React.createElement("div", { className: "gs-row" },
-      React.createElement("div", { className: "gs-rowText" },
-        React.createElement("div", { className: "gs-title" }, "开场语与收尾语"),
-        React.createElement("div", { className: "gs-desc" }, "固定每次回复的开场与收尾：文本、表情、自定义图片/GIF、字号、字重、颜色、动效，以及上下文提醒阈值。改动会自动保存并立即生效。")
-      ),
-      React.createElement("div", { className: "gs-control" },
-        React.createElement("button", {
-          type: "button", className: open ? "gs-btn gs-btn-on" : "gs-btn",
-          onClick: function () { setOpen(!open); }
-        }, open ? "收起" : "配置")
-      )
-    ),
-    open ? React.createElement(Editor, null) : null
-  );
-}
-
 /* ─── 输入框上方的卡片：样式预览 + 占用提醒 ───────────────────────────── */
 
 function occupancyOf(pressure) {
@@ -2987,15 +2961,7 @@ function apply(ctx) {
     return;
   }
 
-  ctx.effect(function () {
-    return slots.inject("settings.general.item", function () {
-      return slots.register(
-        { name: "settings.general.item", id: "greet-signoff-config", order: 5 },
-        function () { return React.createElement(ConfigRow, null); }
-      );
-    });
-  }, "greet-signoff:settings-row");
-
+  // 设置入口只在左侧菜单栏的「开场收尾」一处（不再往「通用」里再塞一行，避免同一个编辑器出现两个入口）。
   ctx.effect(function () {
     return slots.inject("settings.section", function () {
       return slots.register(

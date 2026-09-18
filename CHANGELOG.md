@@ -3,6 +3,14 @@
 本文件记录 `dsh-greet-signoff` 的每个发布版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.1] - 2026-09-18
+
+### 变更
+
+- **去掉重复的设置入口**：以前「设置 → 通用」里有一行「开场语与收尾语」，左侧菜单栏里还有一个「开场收尾」，
+  同一个编辑器出现两个入口容易搞混。现在**只保留左侧菜单栏的「开场收尾」**。
+- 随之删掉不再使用的 `ConfigRow` 组件与 `.gs-row / .gs-rowText / .gs-title / .gs-desc / .gs-control` 五条样式。
+
 ## [1.3.0] - 2026-09-18
 
 工程批次：补上回归网、把 51KB 表情索引搬出主包、打包与 CI 就绪。
