@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -485,10 +485,68 @@ test('预算口径：100% = 你自己设的红线（这才是"该开新会话了
   assert.equal(t.budgetReading(110000, 75000, 110000).tone, 'critical')
 })
 
+test('预算模式：三个入口都还在（源码级防误删）', () => {
+  // ① 进度条小胶囊 ② 横幅按钮 ③ 设置页档位按钮
+  assert.ok(SOURCE.includes('gs-mode-pill'), '① 进度条小胶囊的样式/类名不见了')
+  assert.ok(SOURCE.includes('gs-dock-mode'), '① 进度条小胶囊的容器不见了')
+  assert.ok(SOURCE.includes('切大任务'), '② 横幅上的「切大任务」按钮不见了')
+  assert.ok(SOURCE.includes('跟随默认预算'), '② 横幅上的「跟随默认预算」按钮不见了')
+  assert.ok(SOURCE.includes('"预算模式"'), '③ 设置页的「预算模式」档位不见了')
+  assert.ok(SOURCE.includes('gs.signoff.mode.'), '本会话临时档的存储键不见了')
+})
+
 test('token 的中文直观写法', () => {
   assert.equal(t.formatWan(248930), '24.9 万')
   assert.equal(t.formatWan(110000), '11 万')
   assert.equal(t.formatWan(75000), '7.5 万')
   assert.equal(t.formatWan(3200), '3.2k')
   assert.equal(t.formatWan(Number.NaN), '?')
+})
+
+test('预算模式（大任务模式）：三档预设 + 自定义，优先级 本会话 > 全局 > 默认', () => {
+  // 什么都没设 → 内置默认「日常」7.5 万 / 11 万
+  const d = t.resolveBudgetMode(undefined, '', 75000, 110000)
+  assert.equal(d.mode, 'daily')
+  assert.equal(d.scope, 'default')
+  assert.equal(d.warn, 75000)
+  assert.equal(d.critical, 110000)
+  // 全局档「大任务」：15 万 / 20 万
+  const big = t.resolveBudgetMode('big', '', 75000, 110000)
+  assert.equal(big.mode, 'big')
+  assert.equal(big.scope, 'global')
+  assert.equal(big.warn, 150000)
+  assert.equal(big.critical, 200000)
+  // 全局档「省着聊」：5 万 / 7.5 万（手填的数字被忽略）
+  assert.equal(t.resolveBudgetMode('save', '', 123, 456).critical, 75000)
+  // 本会话临时档压过全局档
+  const s = t.resolveBudgetMode('save', 'big', 75000, 110000)
+  assert.equal(s.mode, 'big')
+  assert.equal(s.scope, 'session')
+  assert.equal(s.warn, 150000)
+  // 自定义档用手填的两个数
+  const c = t.resolveBudgetMode('custom', '', 60000, 90000)
+  assert.equal(c.custom, true)
+  assert.equal(c.warn, 60000)
+  assert.equal(c.critical, 90000)
+  // 手填写坏了（红线不比黄线大）→ 兜底成黄线的 1.5 倍
+  assert.equal(t.resolveBudgetMode('custom', '', 100000, 50000).critical, 150000)
+  // 认不出来的档位（手改坏了/旧版本存的）当没设置
+  assert.equal(t.resolveBudgetMode('nonsense', 'also-bad', 75000, 110000).mode, 'daily')
+  assert.equal(t.normalizeBudgetMode('big'), 'big')
+  assert.equal(t.normalizeBudgetMode(''), '')
+  assert.equal(t.normalizeBudgetMode(undefined), '')
+})
+
+test('预算模式：胶囊点一下轮转「日常 → 大任务 → 省着聊 → 跟随默认」', () => {
+  assert.equal(t.nextBudgetMode('daily'), 'big')
+  assert.equal(t.nextBudgetMode('big'), 'save')
+  assert.equal(t.nextBudgetMode('save'), '')
+  assert.equal(t.nextBudgetMode(''), 'daily')
+  assert.equal(t.nextBudgetMode('custom'), 'daily')
+  assert.equal(t.nextBudgetMode('nonsense'), 'daily')
+  assert.equal(t.budgetModeLabel('big'), '大任务')
+  assert.equal(t.budgetModeLabel('nope'), '日常')
+  assert.ok(t.budgetModeHint('save').indexOf('5 万') >= 0, '省着聊的说明里有两条线')
+  assert.equal(t.budgetModes.length, 4)
+  assert.equal(t.budgetModeCycle.length, 4)
 })

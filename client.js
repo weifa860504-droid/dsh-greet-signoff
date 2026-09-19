@@ -839,6 +839,12 @@ function css() {
     ".gs-dock-time{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}",
     ".gs-dock-time b{font-weight:600;color:var(--dsw-alias-label-secondary)}",
     ".gs-dock-time .gs-clock{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
+    /* 预算模式行：🎯 小胶囊（点一下切档，只影响本会话）+ 一句提示 */
+    ".gs-dock-mode{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
+    ".gs-mode-pill{padding:1px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}",
+    ".gs-mode-pill:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+    ".gs-mode-pill-on{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary);font-weight:600}",
+    ".gs-mode-hint{font-size:11px;opacity:.85}",
     ".gs-fold{align-items:center;gap:6px;display:flex;cursor:pointer;user-select:none}",
     ".gs-fold-caret{color:var(--dsw-alias-label-tertiary);font-size:10px;width:10px}",
     ".gs-fold-sum{color:var(--dsw-alias-label-caption);margin-left:auto;font-size:12px}",
@@ -1255,7 +1261,26 @@ function barScale(warnPercent, criticalPercent, colors, alpha) {
 /* ─── 进度条外观偏好（纯前端，存浏览器本地；改完立即生效、不用重启） ──── */
 
 var UI_KEY = "gs.signoff.ui";
-var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full", showTime: true, meterMode: "budget", budgetWarn: 75000, budgetCritical: 110000 };
+var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full", showTime: true, meterMode: "budget", budgetMode: "daily", budgetWarn: 75000, budgetCritical: 110000 };
+/**
+ * 预算模式（=「大任务模式」）：三档预设 + 自定义，只决定黄线/红线画在哪。
+ *
+ * 为什么要有它：日常小任务 7.5 万 tok 就该换会话，但一次大改造/长调研动辄十几万 tok，
+ * 拿日常线去卡会一直报红，提醒就变成了噪音。所以给一个"一键抬线 / 一键降线"的档位：
+ * ① 全局默认档存在 gs.signoff.ui.budgetMode（设置页里选）；
+ * ② 本会话临时档存在 gs.signoff.mode.<sessionId>（进度条上的小胶囊点一下就切，不影响默认）；
+ * ③ 谁生效：本会话临时档 > 全局默认档 > 内置默认（日常）。
+ */
+var BUDGET_MODE_KEY = "gs.signoff.mode.";
+var DEFAULT_BUDGET_MODE = "daily";
+var BUDGET_MODES = [
+  { id: "daily", label: "日常", warn: 75000, critical: 110000, hint: "小任务：一件事聊完就换新会话（7.5 万提醒 / 11 万必须换）" },
+  { id: "big", label: "大任务", warn: 150000, critical: 200000, hint: "一次做完再换：大改造、长调研用这个（15 万 / 20 万）" },
+  { id: "save", label: "省着聊", warn: 50000, critical: 75000, hint: "最省：更早换会话，代价是重读上下文（5 万 / 7.5 万）" },
+  { id: "custom", label: "自定义", warn: null, critical: null, hint: "用设置页里手填的黄线/红线" }
+];
+/** 小胶囊点一下的轮转顺序；最后一项是空串 = 清掉本会话临时档，回到默认档。 */
+var BUDGET_MODE_CYCLE = ["daily", "big", "save", ""];
 var BAR_HEIGHTS = [6, 9, 12, 16];
 var MARKER_SCALES = [
   { value: 6, label: "小" },
@@ -1323,6 +1348,10 @@ try {
     if (typeof savedUi.budgetWarn === "number" && isFinite(savedUi.budgetWarn)) uiState.budgetWarn = Math.min(900000, Math.max(5000, Math.round(savedUi.budgetWarn)));
     if (typeof savedUi.budgetCritical === "number" && isFinite(savedUi.budgetCritical)) uiState.budgetCritical = Math.min(999000, Math.max(10000, Math.round(savedUi.budgetCritical)));
     if (uiState.budgetCritical <= uiState.budgetWarn) uiState.budgetCritical = Math.round(uiState.budgetWarn * 1.5);
+    // 预算档（大任务模式）：认不出来的值就当没设置，回落到内置默认"日常"。
+    if (typeof savedUi.budgetMode === "string") {
+      uiState.budgetMode = normalizeBudgetMode(savedUi.budgetMode) === "" ? DEFAULT_BUDGET_MODE : savedUi.budgetMode;
+    }
     if (typeof savedUi.markerImage === "string" && savedUi.markerImage.length < 400 * 1024) uiState.markerImage = savedUi.markerImage;
   }
 } catch (error) { /* 隐私模式等读不到就用默认值 */ }
@@ -1340,12 +1369,57 @@ function useUiPrefs() {
   return uiState;
 }
 
-function setUiPrefs(patch) {
-  uiState = Object.assign({}, uiState, patch);
-  try { window.localStorage.setItem(UI_KEY, JSON.stringify(uiState)); } catch (error) { /* 忽略写入失败 */ }
+function notifyUiListeners() {
   uiListeners.forEach(function (fn) {
     try { fn(); } catch (error) { console.error("[greet-signoff] ui listener failed", error); }
   });
+}
+
+function setUiPrefs(patch) {
+  uiState = Object.assign({}, uiState, patch);
+  try { window.localStorage.setItem(UI_KEY, JSON.stringify(uiState)); } catch (error) { /* 忽略写入失败 */ }
+  notifyUiListeners();
+}
+
+/* ─── 本会话临时预算档：只影响当前的这一条会话，不动全局默认档 ────────────── */
+
+/** 读过的本会话档位（key = gs.signoff.mode.<sessionId>），避免每次渲染都同步读 localStorage。 */
+var sessionModeMemo = {};
+
+function sessionModeKey(sessionId) {
+  return typeof sessionId === "string" && sessionId.length > 0 ? BUDGET_MODE_KEY + sessionId : "";
+}
+
+/**
+ * 读本会话生效的临时档（没设过就是空串）。
+ * @param {string} sessionId 会话 id（空串 = 还没进会话）。
+ * @returns {string} 档位 id，或空串。
+ */
+function readSessionMode(sessionId) {
+  var key = sessionModeKey(sessionId);
+  if (key === "") return "";
+  if (Object.prototype.hasOwnProperty.call(sessionModeMemo, key)) return sessionModeMemo[key];
+  var value = "";
+  try { value = normalizeBudgetMode(window.localStorage.getItem(key) || ""); } catch (error) { value = ""; }
+  sessionModeMemo[key] = value;
+  return value;
+}
+
+/**
+ * 写本会话的临时档（空串 = 清掉，回到默认档），并通知界面重算。
+ * @param {string} sessionId 会话 id。
+ * @param {string} mode 档位 id 或空串。
+ */
+function writeSessionMode(sessionId, mode) {
+  var key = sessionModeKey(sessionId);
+  if (key === "") return;
+  var value = normalizeBudgetMode(mode);
+  sessionModeMemo[key] = value;
+  try {
+    if (value === "") window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch (error) { /* 隐私模式：只留在内存里 */ }
+  notifyUiListeners();
 }
 
 function validate(draft) {
@@ -2968,17 +3042,34 @@ function Editor() {
         { value: "window", label: "占模型窗口（旧口径）" }
       ], ui.meterMode === "window" ? "window" : "budget",
         function (value) { setUiPrefs({ meterMode: value === "window" ? "window" : "budget" }); }, "meterMode", true),
-      cell("黄线", React.createElement("span", { className: "gs-cellgroup" },
+      // 预算模式（大任务模式）：一键切档，不用每次手改两个数字。
+      cell("预算模式", React.createElement("span", { className: "gs-cellgroup" },
+        BUDGET_MODES.map(function (item) {
+          return React.createElement("button", {
+            key: "mode-" + item.id, type: "button",
+            className: ui.budgetMode === item.id ? "gs-mode-pill gs-mode-pill-on" : "gs-mode-pill",
+            title: item.hint + (item.id === "custom" ? "" : "（全局默认档）"),
+            onClick: function () { setUiPrefs({ budgetMode: item.id }); }
+          }, item.label);
+        })
+      ), "budgetMode", true),
+      React.createElement("div", { className: "gs-cell gs-cell-wide", key: "modeHint" },
+        React.createElement("span", { className: "gs-hint" },
+          "预算模式只决定两条线画在哪：日常 7.5 万/11 万、大任务 15 万/20 万、省着聊 5 万/7.5 万、自定义用下面手填的两个数。"
+          + "进度条行里那个 🎯 小胶囊点一下就能给「本会话」临时换档（不动这里的默认档），横幅上的「切大任务」是同一个作用；"
+          + "大任务干完开新会话，临时档自然作废、回到这里的默认档。")
+      ),
+      cell("黄线（自定义档）", React.createElement("span", { className: "gs-cellgroup" },
         numInput(ui.budgetWarn, 5000, 900000, 5000, function (value) { setUiPrefs({ budgetWarn: Math.round(value) }); }),
         React.createElement("span", { className: "gs-label gs-unit" }, "tok 提醒")
       ), "budgetWarn"),
-      cell("红线", React.createElement("span", { className: "gs-cellgroup" },
+      cell("红线（自定义档）", React.createElement("span", { className: "gs-cellgroup" },
         numInput(ui.budgetCritical, 10000, 999000, 5000, function (value) { setUiPrefs({ budgetCritical: Math.round(value) }); }),
         React.createElement("span", { className: "gs-label gs-unit" }, "tok 必须换")
       ), "budgetCritical"),
       React.createElement("div", { className: "gs-cell gs-cell-wide", key: "meterHint" },
         React.createElement("span", { className: "gs-hint" },
-          "预算口径下 100% = 你的红线：默认 7.5 万 tok 变黄、11 万 tok 整条变红，条下弹红底大字「🚨 该开新会话了」，"
+          "预算口径下 100% = 你当前档位的红线（默认「日常」：7.5 万 tok 变黄、11 万 tok 整条变红），条下弹红底大字「🚨 该开新会话了」，"
           + "浏览器标签页标题也会加 🚨 —— 不用盯着数字看。超了会显示「超 N 倍」。想回到以前那种「占模型窗口 24%」就切上面的口径。")
       ),
       selectCell("小车", (function () {
@@ -3358,6 +3449,80 @@ function budgetReading(used, warnTokens, criticalTokens) {
   };
 }
 
+/** 把 token 数夹进合法范围（与设置页输入框的 min/max 对齐）。 */
+function clampBudgetTokens(value, min, max, fallback) {
+  if (typeof value !== "number" || !isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/**
+ * 认档位 id：认不出来（没设过、手改坏了、旧版本存的）一律返回空串，由调用方决定回落。
+ * @param {string} mode 档位 id。
+ * @returns {string} 合法档位 id，或空串。
+ */
+function normalizeBudgetMode(mode) {
+  if (typeof mode !== "string") return "";
+  for (var i = 0; i < BUDGET_MODES.length; i += 1) {
+    if (BUDGET_MODES[i].id === mode) return mode;
+  }
+  return "";
+}
+
+/** 档位的展示名（认不出来当"日常"）。 */
+function budgetModeLabel(mode) {
+  var id = normalizeBudgetMode(mode);
+  for (var i = 0; i < BUDGET_MODES.length; i += 1) {
+    if (BUDGET_MODES[i].id === id) return BUDGET_MODES[i].label;
+  }
+  return BUDGET_MODES[0].label;
+}
+
+/** 档位的一句话说明（胶囊 tooltip / 设置页提示用）。 */
+function budgetModeHint(mode) {
+  var id = normalizeBudgetMode(mode);
+  for (var i = 0; i < BUDGET_MODES.length; i += 1) {
+    if (BUDGET_MODES[i].id === id) return BUDGET_MODES[i].hint;
+  }
+  return BUDGET_MODES[0].hint;
+}
+
+/**
+ * 算出"现在真正生效"的两条线：本会话临时档 > 全局默认档 > 内置默认；档位是 custom 时用手填的两个数。
+ * @param {string} globalMode 全局档（gs.signoff.ui.budgetMode）。
+ * @param {string} sessionMode 本会话临时档（空串 = 没设）。
+ * @param {number} customWarn 手填黄线。
+ * @param {number} customCritical 手填红线。
+ * @returns {{mode:string,warn:number,critical:number,scope:string,custom:boolean}} scope: session | global | default。
+ */
+function resolveBudgetMode(globalMode, sessionMode, customWarn, customCritical) {
+  var session = normalizeBudgetMode(sessionMode);
+  var global = normalizeBudgetMode(globalMode);
+  var mode = session !== "" ? session : (global !== "" ? global : DEFAULT_BUDGET_MODE);
+  var scope = session !== "" ? "session" : (global !== "" ? "global" : "default");
+  var warn = clampBudgetTokens(customWarn, 5000, 900000, UI_DEFAULTS.budgetWarn);
+  var critical = clampBudgetTokens(customCritical, 10000, 999000, UI_DEFAULTS.budgetCritical);
+  if (critical <= warn) critical = Math.round(warn * 1.5);
+  for (var i = 0; i < BUDGET_MODES.length; i += 1) {
+    if (BUDGET_MODES[i].id === mode && BUDGET_MODES[i].warn !== null) {
+      warn = BUDGET_MODES[i].warn;
+      critical = BUDGET_MODES[i].critical;
+    }
+  }
+  return { mode: mode, warn: warn, critical: critical, scope: scope, custom: mode === "custom" };
+}
+
+/**
+ * 胶囊点一下切下一档：日常 → 大任务 → 省着聊 → 跟随默认（空串 = 清掉本会话临时档）。
+ * 自定义档不在轮转里（它要在设置页填数），从自定义点一下会回到"日常"。
+ * @param {string} mode 当前生效档。
+ * @returns {string} 下一档 id，或空串（跟随默认）。
+ */
+function nextBudgetMode(mode) {
+  var index = BUDGET_MODE_CYCLE.indexOf(normalizeBudgetMode(mode));
+  if (index < 0) return BUDGET_MODE_CYCLE[0];
+  return BUDGET_MODE_CYCLE[(index + 1) % BUDGET_MODE_CYCLE.length];
+}
+
 /**
  * token 数的中文直观写法：248930 → "24.9 万"，110000 → "11 万"，3200 → "3.2k"。
  * 比 "1.2k/1.0M" 更贴发哥的说话习惯（他关心的是"几万 tok"）。
@@ -3473,8 +3638,13 @@ var SUMMARY_PROMPT = "请把本次会话整理成一份交接摘要：目标、�
 function GreetDock(props) {
   var store = useConfig();
   var config = store.config;
-  // 外观偏好（含进度条口径）先取：口径决定下面所有读数怎么算。
+  // 外观偏好（含进度条口径/预算档）先取：口径决定下面所有读数怎么算。
   var ui = useUiPrefs();
+  var sessionId = props !== null && props !== undefined && props.session !== null && props.session !== undefined
+    && typeof props.session.sessionId === "string" ? props.session.sessionId : "";
+  // 预算档：本会话临时档 > 全局默认档 > 内置默认（custom 档用手填的两个数）。
+  var sessionBudgetMode = readSessionMode(sessionId);
+  var modeInfo = resolveBudgetMode(ui.budgetMode, sessionBudgetMode, ui.budgetWarn, ui.budgetCritical);
   var pressure = props !== null && props !== undefined && typeof props.useProjection === "function"
     ? props.useProjection("contextPressure")
     : undefined;
@@ -3483,7 +3653,7 @@ function GreetDock(props) {
   var usedTokens = hasReading ? occupancy.used : -1;
   var windowPercent = hasReading ? occupancy.percent : 0;
   var meterMode = ui.meterMode === "window" ? "window" : "budget";
-  var budget = budgetReading(hasReading ? usedTokens : null, ui.budgetWarn, ui.budgetCritical);
+  var budget = budgetReading(hasReading ? usedTokens : null, modeInfo.warn, modeInfo.critical);
   // percent：budget 口径下 100% = 你设的「必须换会话」线（可以超过 100%，表示超了多少）；
   // window 口径下沿用旧行为（占模型窗口）。
   var percent = meterMode === "budget" ? budget.percent : windowPercent;
@@ -3538,8 +3708,6 @@ function GreetDock(props) {
   // ── 时间维度：① 已聊多久（宿主半给的会话创建时间，拿不到退回本地记的"第一次见到"）
   //               ② 还能聊多久（按实测 token/分钟，数据不够退回轮数估算）
   // 两个来源都要"真的在走"：读数每 5 秒重算一次，进度条不再是一张贴上去就不动的图。
-  var sessionId = props !== null && props !== undefined && props.session !== null && props.session !== undefined
-    && typeof props.session.sessionId === "string" ? props.session.sessionId : "";
   var nowPair = React.useState(function () { return Date.now(); });
   var now = nowPair[0];
   var setNow = nowPair[1];
@@ -3734,6 +3902,30 @@ function GreetDock(props) {
     done(false);
   }
 
+  /**
+   * 换预算档（三个入口——进度条胶囊、横幅按钮、设置页——都走这里）：
+   * ① 有会话 id → 只写「本会话临时档」，不碰设置页里的默认档；
+   * ② 还没进会话（hero 态、拿不到 id）→ 改默认档，免得点了没反应；
+   * ③ 传空串 = 清掉本会话临时档，回到默认档。
+   * 顺手把「现在生效的两条线」反馈到进度条下面那行提示（.gs-dock-note）里。
+   * @param {string} mode 档位 id，或空串（跟随默认）。
+   */
+  function applyBudgetMode(mode) {
+    var id = normalizeBudgetMode(mode);
+    if (sessionId === "") {
+      var fallback = id === "" ? DEFAULT_BUDGET_MODE : id;
+      setUiPrefs({ budgetMode: fallback });
+      setSumNotice("默认预算档已设为「" + budgetModeLabel(fallback) + "」。");
+      return;
+    }
+    writeSessionMode(sessionId, id);
+    var next = resolveBudgetMode(ui.budgetMode, id, ui.budgetWarn, ui.budgetCritical);
+    setSumNotice(id === ""
+      ? "已清掉本会话的临时档，回到默认「" + budgetModeLabel(next.mode) + "」（" + formatWan(next.warn) + " 提醒 / " + formatWan(next.critical) + " 必须换）。"
+      : "本会话预算档：「" + budgetModeLabel(id) + "」" + formatWan(next.warn) + " 提醒 / " + formatWan(next.critical)
+        + " 必须换 —— 只影响这条会话，开新会话即失效。");
+  }
+
   // 导航条式进度条：一辆小车随占用前进，车头实时显示百分比；
   // 颜色按两段式色带随占用变化（0% 安全色 → 黄色阈值 → 红色阈值），到达红色阈值整条纯色并呼吸。
   // 左右内边距由 composerInsets() 实时量出，因此长度始终与输入框对齐、随其缩放。
@@ -3759,6 +3951,23 @@ function GreetDock(props) {
   var markerNode = markerImage !== ""
     ? React.createElement("img", { className: "gs-marker-img", src: markerImage, alt: "" })
     : React.createElement("span", { className: "gs-marker-emoji" }, marker);
+
+  // 预算模式小胶囊（三个入口里的主入口）：不用进设置页，进度条下面点一下就切档。
+  var modeLabel = budgetModeLabel(modeInfo.mode);
+  var modeScopeText = modeInfo.scope === "session" ? "本会话临时档（不影响默认）" : "跟随默认档";
+  var modePill = React.createElement("div", { className: "gs-dock-mode" },
+    React.createElement("button", {
+      type: "button",
+      className: "gs-mode-pill" + (modeInfo.scope === "session" ? " gs-mode-pill-on" : ""),
+      title: "当前预算档「" + modeLabel + "」：" + formatWan(budget.warn) + " 提醒 / " + formatWan(budget.critical)
+        + " 必须换 · " + modeScopeText + " · " + budgetModeHint(modeInfo.mode)
+        + " · 点一下切下一档（" + BUDGET_MODE_CYCLE.slice(0, 3).map(budgetModeLabel).join(" → ") + " → 跟随默认）",
+      onClick: function () { applyBudgetMode(nextBudgetMode(modeInfo.mode)); }
+    }, "🎯 " + modeLabel + (modeInfo.scope === "session" ? "（本会话）" : "")),
+    tone !== "ok" && modeInfo.mode !== "big"
+      ? React.createElement("span", { className: "gs-mode-hint" }, "任务大？点胶囊抬线，别急着开新会话")
+      : null
+  );
 
   // 外层 .gs-dock 不带背景、不留横向内边距：
   // 宿主主题会给输入区附属卡片（[data-slot="conversation.input.dock"] > *）强制上白底/圆角/阴影，
@@ -3831,6 +4040,12 @@ function GreetDock(props) {
       React.createElement("span", { className: "gs-dock-banner-sub" }, alertSub)
     ),
     React.createElement("span", { className: "gs-dock-actions" },
+      modeInfo.mode === "big"
+        ? null
+        : React.createElement("button", { type: "button", className: "gs-dock-new", title: "把本会话的预算线抬到 15 万/20 万（大任务模式，只影响这条会话）", onClick: function () { applyBudgetMode("big"); } }, "切大任务"),
+      modeInfo.scope === "session"
+        ? React.createElement("button", { type: "button", className: "gs-dock-new", title: "清掉本会话的临时预算档，回到默认档", onClick: function () { applyBudgetMode(""); } }, "跟随默认预算")
+        : null,
       canStartSession
         ? React.createElement("button", { type: "button", className: "gs-dock-new", title: "把「交接摘要」的要求交给你（能写进输入框就写，否则复制到剪贴板）", onClick: askSummary }, "总结要点")
         : null,
@@ -3855,6 +4070,8 @@ function GreetDock(props) {
     React.createElement("div", { className: "gs-dock-row", style: rowStyle },
       display === "text" ? textNode : barNode,
       display === "full" ? timeNode : null,
+      // 预算模式小胶囊：任何形态都留着（"大任务模式"的随手开关）
+      modePill,
       // 纯文字形态没有进度条和横幅的位置，所以把横幅也塞进行内（保持"一眼就知道"）
       display === "text" ? bannerNode : null
     ),
@@ -4943,6 +5160,14 @@ module.exports = {
     // 预算口径（"该开新会话了"就是按这条线算的）
     budgetReading: budgetReading,
     formatWan: formatWan,
+    // 预算模式（大任务模式）：档位解析、切档轮转
+    resolveBudgetMode: resolveBudgetMode,
+    normalizeBudgetMode: normalizeBudgetMode,
+    budgetModeLabel: budgetModeLabel,
+    budgetModeHint: budgetModeHint,
+    nextBudgetMode: nextBudgetMode,
+    budgetModes: BUDGET_MODES,
+    budgetModeCycle: BUDGET_MODE_CYCLE,
     // 深浅判定（方案 C）与进度条时间维度
     parseCssRgb: parseCssRgb,
     colorLuminance: colorLuminance,
