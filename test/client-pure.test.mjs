@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -460,4 +460,35 @@ test('消耗速率与剩余时间：数据不够时宁可不给估计', () => {
   assert.equal(t.remainingTimeMs(0, 2000, null, null), 0)
   assert.equal(t.averageTurnMs([0]), null)
   assert.equal(t.averageTurnMs([0, 60000, 180000]), 90000)
+})
+
+
+test('预算口径：100% = 你自己设的红线（这才是"该开新会话了"的判据）', () => {
+  const r = t.budgetReading(248930, 75000, 110000)
+  assert.equal(r.tone, 'critical')
+  assert.equal(r.percent, 226)
+  assert.equal(r.over, true)
+  assert.ok(Math.abs(r.ratio - 2.2629) < 0.01, '超了 2.26 倍')
+  assert.equal(r.warnPercent, 68, '黄线换算成百分比 = 75000/110000')
+  // 黄线区间：到了提醒线但没到必须换的线
+  const warn = t.budgetReading(80000, 75000, 110000)
+  assert.equal(warn.tone, 'warn')
+  assert.equal(warn.percent, 73)
+  // 安全区
+  assert.equal(t.budgetReading(30000, 75000, 110000).tone, 'ok')
+  // 还没读数：不报警、不显示 0% 之外的东西
+  assert.equal(t.budgetReading(null, 75000, 110000).tone, 'ok')
+  assert.equal(t.budgetReading(null, 75000, 110000).percent, 0)
+  // 红线填得不合理（不比黄线大）时自动兜底成黄线的 1.5 倍
+  assert.equal(t.budgetReading(0, 100000, 50000).critical, 150000)
+  // 正好压在红线上算超线
+  assert.equal(t.budgetReading(110000, 75000, 110000).tone, 'critical')
+})
+
+test('token 的中文直观写法', () => {
+  assert.equal(t.formatWan(248930), '24.9 万')
+  assert.equal(t.formatWan(110000), '11 万')
+  assert.equal(t.formatWan(75000), '7.5 万')
+  assert.equal(t.formatWan(3200), '3.2k')
+  assert.equal(t.formatWan(Number.NaN), '?')
 })

@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.11.0";
+var CLIENT_VERSION = "1.12.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -808,6 +808,15 @@ function css() {
     ".gs-tip{position:absolute;left:0;bottom:calc(100% + 6px);z-index:6;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:12px;line-height:16px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s ease}",
     ".gs-dock:hover .gs-tip{opacity:1}",
     ".gs-dock-alert{margin-top:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+    /* 到线/超线的大横幅：不靠百分比，一眼就知道该开新会话了 */
+    ".gs-dock-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:6px;padding:6px 10px;border-radius:8px;font-size:13px;line-height:18px}",
+    ".gs-dock-banner-main{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}",
+    ".gs-dock-banner-title{font-size:15px;font-weight:700;white-space:nowrap}",
+    ".gs-dock-banner-sub{font-size:12px;opacity:.9}",
+    ".gs-dock-banner-warn{background:rgba(224,165,42,.18);border:1px solid rgba(224,165,42,.6);color:var(--dsw-alias-label-primary)}",
+    ".gs-dock-banner-critical{background:#d93026;border:1px solid #b91c1c;color:#fff;animation:gs-alarm 1.1s ease-in-out infinite}",
+    ".gs-dock-banner .gs-dock-new{border-color:currentColor;color:inherit;opacity:.92}",
+    ".gs-dock-banner .gs-dock-new:hover{background:rgba(255,255,255,.18);color:inherit;opacity:1}",
     ".gs-dock-new{margin-left:8px;padding:1px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}",
     ".gs-dock-new:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
     /* 动态变量小标签 */
@@ -1246,7 +1255,7 @@ function barScale(warnPercent, criticalPercent, colors, alpha) {
 /* ─── 进度条外观偏好（纯前端，存浏览器本地；改完立即生效、不用重启） ──── */
 
 var UI_KEY = "gs.signoff.ui";
-var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full", showTime: true };
+var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full", showTime: true, meterMode: "budget", budgetWarn: 75000, budgetCritical: 110000 };
 var BAR_HEIGHTS = [6, 9, 12, 16];
 var MARKER_SCALES = [
   { value: 6, label: "小" },
@@ -1309,6 +1318,11 @@ try {
     if (typeof savedUi.imageFlipped === "boolean") uiState.imageFlipped = savedUi.imageFlipped;
     if (typeof savedUi.scheme === "string" && BAR_SCHEMES.some(function (s) { return s.id === savedUi.scheme; })) uiState.scheme = savedUi.scheme;
     if (typeof savedUi.showTime === "boolean") uiState.showTime = savedUi.showTime;
+    // 进度条口径：默认按"你自己的预算线"（100% = 必须换会话那条线），也可以切回"占模型窗口"。
+    if (savedUi.meterMode === "budget" || savedUi.meterMode === "window") uiState.meterMode = savedUi.meterMode;
+    if (typeof savedUi.budgetWarn === "number" && isFinite(savedUi.budgetWarn)) uiState.budgetWarn = Math.min(900000, Math.max(5000, Math.round(savedUi.budgetWarn)));
+    if (typeof savedUi.budgetCritical === "number" && isFinite(savedUi.budgetCritical)) uiState.budgetCritical = Math.min(999000, Math.max(10000, Math.round(savedUi.budgetCritical)));
+    if (uiState.budgetCritical <= uiState.budgetWarn) uiState.budgetCritical = Math.round(uiState.budgetWarn * 1.5);
     if (typeof savedUi.markerImage === "string" && savedUi.markerImage.length < 400 * 1024) uiState.markerImage = savedUi.markerImage;
   }
 } catch (error) { /* 隐私模式等读不到就用默认值 */ }
@@ -2948,6 +2962,25 @@ function Editor() {
         { value: "off", label: "不显示" }
       ], ui.showTime === false ? "off" : "on",
         function (value) { setUiPrefs({ showTime: value !== "off" }); }, "showTime", true),
+      // 进度条口径：默认按"你自己的预算线"，而不是按 100 万的模型窗口（那个永远看着很安全）。
+      selectCell("口径", [
+        { value: "budget", label: "按你的预算线（推荐）" },
+        { value: "window", label: "占模型窗口（旧口径）" }
+      ], ui.meterMode === "window" ? "window" : "budget",
+        function (value) { setUiPrefs({ meterMode: value === "window" ? "window" : "budget" }); }, "meterMode", true),
+      cell("黄线", React.createElement("span", { className: "gs-cellgroup" },
+        numInput(ui.budgetWarn, 5000, 900000, 5000, function (value) { setUiPrefs({ budgetWarn: Math.round(value) }); }),
+        React.createElement("span", { className: "gs-label gs-unit" }, "tok 提醒")
+      ), "budgetWarn"),
+      cell("红线", React.createElement("span", { className: "gs-cellgroup" },
+        numInput(ui.budgetCritical, 10000, 999000, 5000, function (value) { setUiPrefs({ budgetCritical: Math.round(value) }); }),
+        React.createElement("span", { className: "gs-label gs-unit" }, "tok 必须换")
+      ), "budgetCritical"),
+      React.createElement("div", { className: "gs-cell gs-cell-wide", key: "meterHint" },
+        React.createElement("span", { className: "gs-hint" },
+          "预算口径下 100% = 你的红线：默认 7.5 万 tok 变黄、11 万 tok 整条变红，条下弹红底大字「🚨 该开新会话了」，"
+          + "浏览器标签页标题也会加 🚨 —— 不用盯着数字看。超了会显示「超 N 倍」。想回到以前那种「占模型窗口 24%」就切上面的口径。")
+      ),
       selectCell("小车", (function () {
         var options = BAR_MARKERS.map(function (item) {
           return { value: item.value === "" ? "__none__" : item.value, label: item.label === "" ? "无" : (item.label + " " + item.name) };
@@ -3296,6 +3329,71 @@ function contextAlert(percent, warnPercent, criticalPercent) {
 }
 
 /**
+ * 按"你自己的预算线"读占用：**100% = 你设的「必须换会话」线**（默认 11 万 tok）。
+ * 这是给发哥用的口径——原来的"占模型窗口"分母是 100 万，24% 看着很安全，其实早就该换会话了。
+ * 抽成纯函数便于单测：什么算接近、什么算超了，规则必须锁住。
+ * @param {number|null} used 当前占用 token（拿不到读数时传 null）。
+ * @param {number} warnTokens 黄线（提醒）token 数。
+ * @param {number} criticalTokens 红线（必须换）token 数。
+ * @returns {{percent:number,tone:string,ratio:number,over:boolean,warnPercent:number,warn:number,critical:number}} 读数。
+ */
+function budgetReading(used, warnTokens, criticalTokens) {
+  var warn = typeof warnTokens === "number" && isFinite(warnTokens) && warnTokens > 0 ? Math.round(warnTokens) : 75000;
+  var critical = typeof criticalTokens === "number" && isFinite(criticalTokens) && criticalTokens > warn
+    ? Math.round(criticalTokens)
+    : Math.round(warn * 1.5);
+  var warnPercent = Math.max(1, Math.min(99, Math.round(warn / critical * 100)));
+  if (typeof used !== "number" || !isFinite(used) || used < 0) {
+    return { percent: 0, tone: "ok", ratio: 0, over: false, warnPercent: warnPercent, warn: warn, critical: critical };
+  }
+  var ratio = used / critical;
+  return {
+    percent: Math.round(ratio * 100),
+    tone: used >= critical ? "critical" : (used >= warn ? "warn" : "ok"),
+    ratio: ratio,
+    over: used >= critical,
+    warnPercent: warnPercent,
+    warn: warn,
+    critical: critical
+  };
+}
+
+/**
+ * token 数的中文直观写法：248930 → "24.9 万"，110000 → "11 万"，3200 → "3.2k"。
+ * 比 "1.2k/1.0M" 更贴发哥的说话习惯（他关心的是"几万 tok"）。
+ * @param {number} value token 数。
+ * @returns {string} 展示文本。
+ */
+function formatWan(value) {
+  if (typeof value !== "number" || !isFinite(value)) return "?";
+  if (Math.abs(value) < 10000) return formatTokens(value);
+  var wan = value / 10000;
+  return (Math.abs(wan - Math.round(wan)) < 0.05 ? String(Math.round(wan)) : wan.toFixed(1)) + " 万";
+}
+
+/**
+ * 让标签页标题带上提醒前缀：不用盯着页面看，扫一眼浏览器标签就知道该换会话了。
+ * 传空串表示撤掉前缀（切回安全区或组件卸载时都会摘干净）。
+ * @param {string} flag "" | "⚠️ " | "🚨 "
+ */
+function useTitleFlag(flag) {
+  React.useEffect(function () {
+    if (typeof document === "undefined") return undefined;
+    var current = String(document.title || "");
+    var base = current.replace(/^(?:🚨|⚠️)\s*/, "");
+    if (flag === "") {
+      if (current !== base) document.title = base;
+      return undefined;
+    }
+    document.title = flag + base;
+    return function () {
+      var now = String(document.title || "");
+      if (now.indexOf(flag) === 0) document.title = now.slice(flag.length);
+    };
+  }, [flag]);
+}
+
+/**
  * 找输入框元素。DSH 的输入框是一段 contenteditable 的 `[role="textbox"]`，
  * 挂在 `data-slot="conversation.composer"` 里；`[data-dsh-part="composer-input"]` 是更早版本的钩子，
  * 现在页面上**并不存在**（2026-09-18 实测），所以这里按"钩子 → 插槽 → 可见的最后一个可编辑元素"逐级兜底。
@@ -3375,13 +3473,27 @@ var SUMMARY_PROMPT = "请把本次会话整理成一份交接摘要：目标、�
 function GreetDock(props) {
   var store = useConfig();
   var config = store.config;
+  // 外观偏好（含进度条口径）先取：口径决定下面所有读数怎么算。
+  var ui = useUiPrefs();
   var pressure = props !== null && props !== undefined && typeof props.useProjection === "function"
     ? props.useProjection("contextPressure")
     : undefined;
   var occupancy = occupancyOf(pressure);
-  var percent = occupancy === null ? 0 : occupancy.percent;
-  var alert = contextAlert(occupancy === null ? Number.NaN : occupancy.percent, config.warnPercent, config.criticalPercent);
-  var tone = alert.tone;
+  var hasReading = occupancy !== null;
+  var usedTokens = hasReading ? occupancy.used : -1;
+  var windowPercent = hasReading ? occupancy.percent : 0;
+  var meterMode = ui.meterMode === "window" ? "window" : "budget";
+  var budget = budgetReading(hasReading ? usedTokens : null, ui.budgetWarn, ui.budgetCritical);
+  // percent：budget 口径下 100% = 你设的「必须换会话」线（可以超过 100%，表示超了多少）；
+  // window 口径下沿用旧行为（占模型窗口）。
+  var percent = meterMode === "budget" ? budget.percent : windowPercent;
+  var alert = contextAlert(hasReading ? windowPercent : Number.NaN, config.warnPercent, config.criticalPercent);
+  var tone = meterMode === "budget" ? budget.tone : alert.tone;
+  // 颜色带的两个分界：budget 口径用"黄线/红线换算成预算的百分比"，window 口径沿用配置里的百分比。
+  var barWarnPercent = meterMode === "budget" ? budget.warnPercent : config.warnPercent;
+  var barCriticalPercent = meterMode === "budget" ? 100 : config.criticalPercent;
+  // 标签页标题提醒：扫一眼标签就知道该换会话了。
+  useTitleFlag(tone === "critical" ? "🚨 " : (tone === "warn" ? "⚠️ " : ""));
 
   var dockRef = React.useRef(null);
   var insetPair = React.useState(null);
@@ -3423,7 +3535,6 @@ function GreetDock(props) {
   }, []);
 
   // 百分比直接取投影的实时值（不再节流）：车头上的数字随占用实时变化。
-  var hasReading = occupancy !== null;
   // ── 时间维度：① 已聊多久（宿主半给的会话创建时间，拿不到退回本地记的"第一次见到"）
   //               ② 还能聊多久（按实测 token/分钟，数据不够退回轮数估算）
   // 两个来源都要"真的在走"：读数每 5 秒重算一次，进度条不再是一张贴上去就不动的图。
@@ -3465,7 +3576,6 @@ function GreetDock(props) {
   // 采样"每一轮大概吃掉多少 token"：占用只在下一轮请求过后才跳一截，
   // 因此把 >200 的正向增量当作一次"又走了一轮"，取最近几次的均值来估算还能聊几轮。
   var samplerRef = React.useRef({ last: null, jumps: [], samples: [], jumpTimes: [], lastUsedAt: 0 });
-  var usedTokens = hasReading ? occupancy.used : -1;
   React.useEffect(function () {
     if (usedTokens < 0) return;
     var sampler = samplerRef.current;
@@ -3504,20 +3614,34 @@ function GreetDock(props) {
     for (var ji = 0; ji < jumps.length; ji += 1) jumpSum += jumps[ji];
     avgPerTurn = Math.round(jumpSum / jumps.length);
   }
-  var remaining = hasReading ? Math.max(0, occupancy.capacity - occupancy.used) : null;
+  // 剩余：budget 口径 = 到"必须换会话"线还剩多少（超了就是 0）；window 口径 = 到模型窗口还剩多少。
+  var remaining = hasReading
+    ? (meterMode === "budget"
+        ? Math.max(0, budget.critical - usedTokens)
+        : Math.max(0, occupancy.capacity - occupancy.used))
+    : null;
   var turnsLeft = avgPerTurn !== null && avgPerTurn > 0 && remaining !== null
     ? Math.max(0, Math.floor(remaining / avgPerTurn))
     : null;
+  var overRatioText = budget.ratio >= 1 ? "超 " + budget.ratio.toFixed(1) + " 倍" : "";
   var detail = hasReading
-    ? "上下文占用 " + percent + "% · ~" + formatTokens(occupancy.used) + " / " + formatTokens(occupancy.capacity)
-      + " · 剩余 ~" + formatTokens(remaining)
-      + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + jumps.length + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : "")
+    ? (meterMode === "budget"
+        ? "已用 ~" + formatWan(usedTokens) + " tok / 预算 " + formatWan(budget.critical) + "（" + percent + "%"
+          + (overRatioText === "" ? "" : "，" + overRatioText) + "）"
+          + " · 占模型窗口 " + windowPercent + "%（模型窗口 " + formatTokens(occupancy.capacity) + "）"
+          + " · 到线还剩 ~" + formatTokens(remaining)
+          + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + jumps.length + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : "")
+        : "上下文占用 " + percent + "% · ~" + formatTokens(occupancy.used) + " / " + formatTokens(occupancy.capacity)
+          + " · 剩余 ~" + formatTokens(remaining)
+          + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + jumps.length + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : ""))
     : "上下文占用未知（发一条消息后显示）";
   var tip = detail;
   // 还没有任何请求记录时不显示 "0%"（那看起来像坏了），显示一个短横。
   var pctText = hasReading ? percent + "%" : "—";
   var shortText = hasReading
-    ? percent + "% · 剩余 ~" + formatTokens(remaining) + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮" : "")
+    ? (meterMode === "budget"
+        ? "已用 ~" + formatWan(usedTokens) + " / " + formatWan(budget.critical) + " tok" + (overRatioText === "" ? "" : " · " + overRatioText)
+        : percent + "% · 剩余 ~" + formatTokens(remaining) + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮" : ""))
     : "上下文占用未知";
 
   // ── 时间维度：把"已聊多久 / 还能聊多久"算出来并拼进提示与那一行文字 ──────────
@@ -3554,13 +3678,25 @@ function GreetDock(props) {
   }
   if (staleText !== "") detail += " · " + staleText;
   tip = detail;
-  var shortParts = [hasReading ? percent + "%" : "上下文占用未知"];
+  var shortParts = [hasReading
+    ? (meterMode === "budget"
+        ? "已用 ~" + formatWan(usedTokens) + " / " + formatWan(budget.critical) + " tok" + (overRatioText === "" ? "" : " · " + overRatioText)
+        : percent + "% · 剩余 ~" + formatTokens(remaining))
+    : "上下文占用未知"];
   if (elapsedText !== "") shortParts.push("已聊 " + elapsedText);
-  if (etaText !== "") shortParts.push("还能聊 ~" + etaText);
-  else if (turnsLeft !== null) shortParts.push("约还能聊 " + turnsLeft + " 轮");
-  if (hasReading) shortParts.push("剩余 ~" + formatTokens(remaining));
+  if (etaText !== "") shortParts.push("到线还能聊 ~" + etaText);
+  else if (turnsLeft !== null && meterMode !== "window") shortParts.push("约还能聊 " + turnsLeft + " 轮");
+  if (hasReading && meterMode === "window") shortParts.push("剩余 ~" + formatTokens(remaining));
   shortText = shortParts.join(" · ");
-  var alertLine = alert.line;
+  // 提醒文案：budget 口径下是"该开新会话了"，window 口径沿用原来的两句话。
+  var alertLine = tone === "ok" ? null
+    : (meterMode === "budget"
+        ? (tone === "critical" ? "🚨 该开新会话了" : "⚠️ 快到你的提醒线了")
+        : alert.line);
+  var alertSub = tone === "ok" ? "" : (meterMode === "budget"
+    ? "已 ~" + formatWan(usedTokens) + " tok（预算 " + formatWan(budget.critical) + (overRatioText === "" ? "，到 " + formatWan(budget.warn) + " 提醒" : "，" + overRatioText + "）")
+      + " · 先点「总结要点」再开新会话"
+    : "这是「占模型窗口」口径（" + windowPercent + "%），不代表花钱少 —— 切到预算口径更直观");
   // 超过阈值时给一个"开新会话"按钮：客户端 uiWorkspace 服务提供 startSession()。
   // 该服务是可选的，拿不到就只显示文字提醒，不显示按钮。
   var startSession = pluginCtx !== null && typeof pluginCtx.get === "function" ? pluginCtx.get("uiWorkspace") : undefined;
@@ -3601,12 +3737,13 @@ function GreetDock(props) {
   // 导航条式进度条：一辆小车随占用前进，车头实时显示百分比；
   // 颜色按两段式色带随占用变化（0% 安全色 → 黄色阈值 → 红色阈值），到达红色阈值整条纯色并呼吸。
   // 左右内边距由 composerInsets() 实时量出，因此长度始终与输入框对齐、随其缩放。
-  var ui = useUiPrefs();
   var scheme = schemeOf(ui.scheme);
   var palette = scheme.colors;
-  var color = rampColor(percent, config.warnPercent, config.criticalPercent, palette);
-  var scale = barScale(config.warnPercent, config.criticalPercent, palette);
-  var scaleFaint = barScale(config.warnPercent, config.criticalPercent, palette, 0.22);
+  // 条子上的位置：budget 口径可以超过 100%（超预算），但画的时候封顶 100%，超出的部分靠横幅说。
+  var barPercent = Math.max(0, Math.min(100, percent));
+  var color = rampColor(barPercent, barWarnPercent, barCriticalPercent, palette);
+  var scale = barScale(barWarnPercent, barCriticalPercent, palette);
+  var scaleFaint = barScale(barWarnPercent, barCriticalPercent, palette, 0.22);
   var dangerColor = palette[2];
   var barHeight = typeof ui.barHeight === "number" ? ui.barHeight : 9;
   var marker = typeof ui.marker === "string" ? ui.marker : "";
@@ -3618,7 +3755,7 @@ function GreetDock(props) {
     ? ui.imageFlipped === true
     : (facingRight && MARKER_FLIP[marker] === 1);
   var critical = tone === "critical";
-  var clampLeft = "clamp(" + Math.round(barHeight + 10) + "px, " + percent + "%, calc(100% - " + Math.round(barHeight + 10) + "px))";
+  var clampLeft = "clamp(" + Math.round(barHeight + 10) + "px, " + barPercent + "%, calc(100% - " + Math.round(barHeight + 10) + "px))";
   var markerNode = markerImage !== ""
     ? React.createElement("img", { className: "gs-marker-img", src: markerImage, alt: "" })
     : React.createElement("span", { className: "gs-marker-emoji" }, marker);
@@ -3645,7 +3782,7 @@ function GreetDock(props) {
   },
     React.createElement("div", {
       className: "gs-dock-fill",
-      style: critical ? { width: percent + "%", background: dangerColor } : { width: (percent > 0 ? percent : 0) + "%" }
+      style: critical ? { width: barPercent + "%", background: dangerColor } : { width: barPercent + "%" }
     }),
     (marker === "" && markerImage === "")
       ? null
@@ -3684,6 +3821,24 @@ function GreetDock(props) {
         : null,
       staleText === "" ? null : React.createElement("span", null, "· " + staleText)
     );
+  // 到线/超线的**大横幅**：不用去读百分比，一眼就知道该开新会话了。
+  // 红线是红底白字 + 呼吸；黄线是淡黄底。文字给"已用多少 / 预算多少 / 超了几倍"。
+  var bannerNode = tone === "ok" ? null : React.createElement("div", {
+    className: "gs-dock-banner " + (critical ? "gs-dock-banner-critical" : "gs-dock-banner-warn")
+  },
+    React.createElement("span", { className: "gs-dock-banner-main" },
+      React.createElement("span", { className: "gs-dock-banner-title" }, alertLine),
+      React.createElement("span", { className: "gs-dock-banner-sub" }, alertSub)
+    ),
+    React.createElement("span", { className: "gs-dock-actions" },
+      canStartSession
+        ? React.createElement("button", { type: "button", className: "gs-dock-new", title: "把「交接摘要」的要求交给你（能写进输入框就写，否则复制到剪贴板）", onClick: askSummary }, "总结要点")
+        : null,
+      canStartSession
+        ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
+        : null
+    )
+  );
   return React.createElement("div", {
     className: dockClass,
     ref: dockRef,
@@ -3692,26 +3847,18 @@ function GreetDock(props) {
       "--gs-marker-extra": markerExtra + "px",
       "--gs-scale": scale,
       "--gs-scale-faint": scaleFaint,
-      "--gs-percent": Math.max(1, percent),
+      "--gs-percent": Math.max(1, barPercent),
       "--gs-danger": dangerColor
     }
   },
     React.createElement("div", { className: "gs-tip" }, tip),
     React.createElement("div", { className: "gs-dock-row", style: rowStyle },
       display === "text" ? textNode : barNode,
-      display === "full" ? timeNode : null
+      display === "full" ? timeNode : null,
+      // 纯文字形态没有进度条和横幅的位置，所以把横幅也塞进行内（保持"一眼就知道"）
+      display === "text" ? bannerNode : null
     ),
-    display === "text" || alertLine === null ? null : React.createElement("div", { className: "gs-dock-alert" },
-      React.createElement("span", { className: "gs-dock-alert-text" }, alertLine),
-      React.createElement("span", { className: "gs-dock-actions" },
-        canStartSession
-          ? React.createElement("button", { type: "button", className: "gs-dock-new", title: "把「交接摘要」的要求交给你（能写进输入框就写，否则复制到剪贴板）", onClick: askSummary }, "总结要点")
-          : null,
-        canStartSession
-          ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
-          : null
-      )
-    ),
+    display === "text" ? null : bannerNode,
     sumNotice === "" ? null : React.createElement("div", { className: "gs-dock-note" }, sumNotice)
   );
 }
@@ -4793,6 +4940,9 @@ module.exports = {
     validate: validate,
     occupancyOf: occupancyOf,
     formatTokens: formatTokens,
+    // 预算口径（"该开新会话了"就是按这条线算的）
+    budgetReading: budgetReading,
+    formatWan: formatWan,
     // 深浅判定（方案 C）与进度条时间维度
     parseCssRgb: parseCssRgb,
     colorLuminance: colorLuminance,
