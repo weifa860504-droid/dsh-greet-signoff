@@ -424,7 +424,7 @@ var TEXT_LIMIT = 200;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.10.0";
+var CLIENT_VERSION = "1.11.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -826,6 +826,10 @@ function css() {
     ".gs-dock-compact .gs-marker-pct{display:none}",
     ".gs-dock-textrow{display:flex;align-items:center;gap:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}",
     ".gs-dock-textdot{display:inline-block;width:8px;height:8px;border-radius:999px;flex:none}",
+    /* 进度条下的时间行：已聊多久 / 还能聊多久（随秒走动，不是静态摆设） */
+    ".gs-dock-time{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}",
+    ".gs-dock-time b{font-weight:600;color:var(--dsw-alias-label-secondary)}",
+    ".gs-dock-time .gs-clock{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
     ".gs-fold{align-items:center;gap:6px;display:flex;cursor:pointer;user-select:none}",
     ".gs-fold-caret{color:var(--dsw-alias-label-tertiary);font-size:10px;width:10px}",
     ".gs-fold-sum{color:var(--dsw-alias-label-caption);margin-left:auto;font-size:12px}",
@@ -1242,7 +1246,7 @@ function barScale(warnPercent, criticalPercent, colors, alpha) {
 /* ─── 进度条外观偏好（纯前端，存浏览器本地；改完立即生效、不用重启） ──── */
 
 var UI_KEY = "gs.signoff.ui";
-var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full" };
+var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full", showTime: true };
 var BAR_HEIGHTS = [6, 9, 12, 16];
 var MARKER_SCALES = [
   { value: 6, label: "小" },
@@ -1304,6 +1308,7 @@ try {
     if (savedUi.facing === "native" || savedUi.facing === "right") uiState.facing = savedUi.facing;
     if (typeof savedUi.imageFlipped === "boolean") uiState.imageFlipped = savedUi.imageFlipped;
     if (typeof savedUi.scheme === "string" && BAR_SCHEMES.some(function (s) { return s.id === savedUi.scheme; })) uiState.scheme = savedUi.scheme;
+    if (typeof savedUi.showTime === "boolean") uiState.showTime = savedUi.showTime;
     if (typeof savedUi.markerImage === "string" && savedUi.markerImage.length < 400 * 1024) uiState.markerImage = savedUi.markerImage;
   }
 } catch (error) { /* 隐私模式等读不到就用默认值 */ }
@@ -1384,14 +1389,236 @@ function writeFoldState(state) {
 
 /* ─── 行渲染（编辑器预览与输入框上方卡片共用） ────────────────────────── */
 
-/** 当前是不是深色主题（宿主用 body[data-ds-dark-theme] 标记）。 */
-function isDarkTheme() {
-  try {
-    return document.body !== null && document.body !== undefined && typeof document.body.hasAttribute === "function"
-      && document.body.hasAttribute("data-ds-dark-theme");
-  } catch (error) {
-    return false;
+/* ─── 深浅判定（方案 C：dark-only 皮肤也能认出来） ─────────────────────── */
+
+/**
+ * 解析 CSS 颜色（#rgb / #rrggbb / rgb() / rgba()）→ [r,g,b]。
+ * 解析不出来、或完全透明（看不出底色）时返回 null。
+ * @param {string} value CSS 颜色。
+ * @returns {number[]|null} 三元组。
+ */
+var CSS_RGB_CACHE = new Map();
+
+function parseCssRgb(value) {
+  if (typeof value !== "string") return null;
+  var text = value.trim().toLowerCase();
+  if (text.length === 0) return null;
+  if (CSS_RGB_CACHE.has(text)) return CSS_RGB_CACHE.get(text);
+  var out = null;
+  var hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(text);
+  if (hex !== null) {
+    var body = hex[1];
+    if (body.length === 3) body = body[0] + body[0] + body[1] + body[1] + body[2] + body[2];
+    out = [
+      parseInt(body.slice(0, 2), 16),
+      parseInt(body.slice(2, 4), 16),
+      parseInt(body.slice(4, 6), 16)
+    ];
+  } else {
+    var fn = /^rgba?\(([^)]*)\)$/.exec(text);
+    if (fn !== null) {
+      var parts = fn[1].split(/[\s,\/]+/).filter(function (part) { return part.length > 0; });
+      if (parts.length >= 4) {
+        var alpha = Number(parts[3]);
+        if (!isFinite(alpha) || alpha === 0) parts = [];   // 全透明：没有底色可言
+      }
+      if (parts.length >= 3) {
+        // 兼容百分比写法（rgb(10% 20% 30%)）
+        var channels = [parts[0], parts[1], parts[2]].map(function (part) {
+          var pct = part.indexOf("%") >= 0;
+          var num = parseFloat(part);
+          if (!isFinite(num)) return NaN;
+          return Math.max(0, Math.min(255, Math.round(pct ? num * 2.55 : num)));
+        });
+        if (channels.every(function (n) { return isFinite(n); })) out = channels;
+      }
+    }
   }
+  if (CSS_RGB_CACHE.size > 200) CSS_RGB_CACHE.clear();
+  CSS_RGB_CACHE.set(text, out);
+  return out;
+}
+
+/**
+ * CSS 颜色 → 亮度（0=黑，1=白）；解析不出来返回 null。
+ * @param {string} value CSS 颜色。
+ * @returns {number|null} 亮度。
+ */
+function colorLuminance(value) {
+  var rgb = parseCssRgb(value);
+  if (rgb === null) return null;
+  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+}
+
+/**
+ * 深色判定的**纯函数**部分：把页面上的几条证据合成一个布尔值。
+ * 抽成纯函数是为了可测——无头页面里拿不到真实皮肤，但"什么算深色"这条规则必须锁住。
+ * 判据（任一成立即按深色处理，按可靠性从高到低）：
+ *   ① body[data-ds-dark-theme]：DSH 自带深色主题的官方标记；
+ *   ② 根元素 computed `color-scheme` 含 dark：dark-only 皮肤（astral-choir 等）就是这么声明的；
+ *   ③ 系统偏好 prefers-color-scheme: dark；
+ *   ④ 页面底色亮度 < 0.5：皮肤只改 CSS 变量、上面三条都不成立时的兜底。
+ * @param {Object} signals 证据对象 {bodyDarkAttr,colorScheme,prefersDark,bgLuminance}。
+ * @returns {boolean} 是否按深色处理。
+ */
+function darkFromSignals(signals) {
+  var s = signals === null || signals === undefined ? {} : signals;
+  if (s.bodyDarkAttr === true) return true;
+  if (typeof s.colorScheme === "string" && s.colorScheme.toLowerCase().indexOf("dark") >= 0) return true;
+  if (s.prefersDark === true) return true;
+  if (typeof s.bgLuminance === "number" && isFinite(s.bgLuminance) && s.bgLuminance < 0.5) return true;
+  return false;
+}
+
+/** 当前判定结果（由 refreshDarkTheme 维护；组件订阅后随皮肤切换自动重渲染）。 */
+var darkState = { dark: false };
+var darkListeners = new Set();
+var darkWatch = null;
+/** 已经写到 <html data-gs-dark> 上的值（防止"写属性→观察器→再写"的死循环）。 */
+var darkAttrValue = null;
+/** 合并触发的定时器。 */
+var darkRefreshTimer = null;
+
+/** 从页面读"是不是深色"的几条证据；读不到的留空，绝不抛错。 */
+function readDarkSignals() {
+  var signals = { bodyDarkAttr: false, colorScheme: "", prefersDark: false, bgLuminance: null };
+  try {
+    var body = typeof document === "undefined" ? null : document.body;
+    var root = typeof document === "undefined" ? null : document.documentElement;
+    if (body !== null && body !== undefined && typeof body.hasAttribute === "function") {
+      signals.bodyDarkAttr = body.hasAttribute("data-ds-dark-theme") === true;
+    }
+    if (typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
+      if (root !== null && root !== undefined) {
+        var rootStyle = window.getComputedStyle(root);
+        if (rootStyle !== null && rootStyle !== undefined) {
+          signals.colorScheme = String(rootStyle.colorScheme || "");
+          signals.bgLuminance = colorLuminance(String(rootStyle.backgroundColor || ""));
+        }
+      }
+      if (body !== null && body !== undefined) {
+        var bodyStyle = window.getComputedStyle(body);
+        if (bodyStyle !== null && bodyStyle !== undefined) {
+          var bodyLum = colorLuminance(String(bodyStyle.backgroundColor || ""));
+          // body 完全透明（看不出底色）时保留根元素的结论
+          if (bodyLum !== null) signals.bgLuminance = bodyLum;
+        }
+      }
+    }
+    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+      var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      signals.prefersDark = mq !== null && mq !== undefined && mq.matches === true;
+    }
+  } catch (error) { /* 拿不到证据就当浅色，绝不因为判定失败影响渲染 */ }
+  return signals;
+}
+
+/**
+ * 重算深浅判定：把结果写到 `<html data-gs-dark="1|0">`（对话里那两行的深色档 CSS 就挂在这个标记上），
+ * 结果变化时通知订阅者重渲染。
+ *
+ * ⚠️ 这里必须"值没变就不写属性"：观察器盯着 html 的属性，而 setAttribute 写在观察范围内，
+ * 哪怕值一样也会产生一条 mutation 记录 —— 无脑写会变成 写→观察→写 的死循环，把渲染进程卡死。
+ * @returns {boolean} 当前是否深色。
+ */
+function refreshDarkTheme() {
+  var next = darkFromSignals(readDarkSignals());
+  try {
+    var root = typeof document === "undefined" ? null : document.documentElement;
+    var want = next ? "1" : "0";
+    if (root !== null && root !== undefined && typeof root.setAttribute === "function" && darkAttrValue !== want) {
+      root.setAttribute("data-gs-dark", want);
+      darkAttrValue = want;
+    }
+  } catch (error) { /* 忽略：写不上标记就只影响 CSS 那一路，内联样式仍按 darkState 走 */ }
+  if (next === darkState.dark) return next;
+  darkState.dark = next;
+  darkListeners.forEach(function (listener) {
+    try { listener(); } catch (error) { console.error("[greet-signoff] dark listener failed", error); }
+  });
+  return next;
+}
+
+/** 合并短时间内的多次触发（观察器回调里可能连着来好几条记录），避免重复读 computed style。 */
+function scheduleDarkRefresh() {
+  if (darkRefreshTimer !== null) return;
+  if (typeof window === "undefined" || typeof window.setTimeout !== "function") { refreshDarkTheme(); return; }
+  darkRefreshTimer = window.setTimeout(function () {
+    darkRefreshTimer = null;
+    refreshDarkTheme();
+  }, 50);
+}
+
+/**
+ * 装上深浅判定的监听（只装一次）：皮肤切换改的是 html 属性/CSS 变量，
+ * 所以盯 html 与 body 的属性变化 + 系统偏好变化，外加一个低频兜底对表。
+ */
+function ensureDarkWatch() {
+  if (darkWatch !== null) return;
+  refreshDarkTheme();
+  var observer = null;
+  var media = null;
+  var onMedia = function () { refreshDarkTheme(); };
+  var timer = null;
+  try {
+    if (typeof MutationObserver === "function" && typeof document !== "undefined" && document.documentElement !== undefined) {
+      // 只盯跟皮肤有关的几个属性：皮肤加载器会改 data-dsh-*、class、style；
+      // 全属性观察既费性能，也更容易把无关变化引进来（回调统一走合并触发的 scheduleDarkRefresh）。
+      observer = new MutationObserver(function () { scheduleDarkRefresh(); });
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "style", "data-dsh-skin", "data-dsh-custom-theme", "data-gs-dark", "data-ds-dark-theme"]
+      });
+      if (document.body !== null && document.body !== undefined) {
+        observer.observe(document.body, { attributes: true, attributeFilter: ["class", "style", "data-ds-dark-theme"] });
+      }
+    }
+  } catch (error) { observer = null; }
+  try {
+    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+      media = window.matchMedia("(prefers-color-scheme: dark)");
+      if (media !== null && media !== undefined && typeof media.addEventListener === "function") media.addEventListener("change", onMedia);
+    }
+  } catch (error) { media = null; }
+  try {
+    // 兜底：皮肤换法若只是替换 CSS 变量、又没动属性，属性监听就看不到；每 8 秒对一次表（读 computed style 很便宜）。
+    if (typeof window !== "undefined" && typeof window.setInterval === "function") timer = window.setInterval(refreshDarkTheme, 8000);
+  } catch (error) { timer = null; }
+  darkWatch = { observer: observer, media: media, onMedia: onMedia, timer: timer };
+}
+
+/** 拆掉深浅判定的监听（插件停用时不留定时器）。 */
+function disposeDarkWatch() {
+  if (darkWatch === null) return;
+  try { if (darkWatch.observer !== null) darkWatch.observer.disconnect(); } catch (error) { /* 忽略 */ }
+  try { if (darkRefreshTimer !== null && typeof window !== "undefined") { window.clearTimeout(darkRefreshTimer); darkRefreshTimer = null; } } catch (error) { /* 忽略 */ }
+  try {
+    if (darkWatch.media !== null && typeof darkWatch.media.removeEventListener === "function") darkWatch.media.removeEventListener("change", darkWatch.onMedia);
+  } catch (error) { /* 忽略 */ }
+  try { if (darkWatch.timer !== null && typeof window !== "undefined") window.clearInterval(darkWatch.timer); } catch (error) { /* 忽略 */ }
+  darkWatch = null;
+}
+
+/**
+ * 当前是不是深色（综合判定；结果缓存，由观察器维护，不在渲染里读 computed style）。
+ * @returns {boolean} 是否深色。
+ */
+function isDarkTheme() {
+  return darkState.dark === true;
+}
+
+/** 订阅深浅判定的 React 钩子：皮肤一切换，用到它的组件会跟着重渲染。 */
+function useDarkTheme() {
+  var pair = React.useState(darkState.dark);
+  var setDark = pair[1];
+  React.useEffect(function () {
+    var listener = function () { setDark(darkState.dark); };
+    darkListeners.add(listener);
+    ensureDarkWatch();
+    refreshDarkTheme();
+    return function () { darkListeners.delete(listener); };
+  }, []);
+  return pair[0];
 }
 
 /**
@@ -1522,6 +1749,9 @@ function lineRender(line, label, key) {
 
 function Editor() {
   var store = useConfig();
+  // 深浅皮肤一变就重渲染：预览里的深色档颜色（<字段>Dark）跟着换，
+  // 不用手动刷新页面。（方案 C：dark-only 皮肤只改 CSS 变量，光靠 body 属性认不出来。）
+  var dark = useDarkTheme();
   var draftPair = React.useState(store.config);
   var draft = draftPair[0];
   var setDraft = draftPair[1];
@@ -2073,6 +2303,16 @@ function Editor() {
     add(stylerStats.runs > 0, "贴样式器：运行 " + stylerStats.runs + " 次 · 本页命中 " + hits + " 行（命中 0 说明当前这页还没有对得上的固定行）");
     var dock = typeof document !== "undefined" ? document.querySelector(".gs-dock-bar") : null;
     add(dock !== null, "进度条：" + (dock !== null ? "已挂载（读数 " + (dock.getAttribute("aria-valuenow") || "未知") + "）" : "未挂载（输入框上方的卡片没出现）"));
+    var signals = readDarkSignals();
+    add(true, "深浅判定：" + (isDarkTheme() ? "深色" : "浅色")
+      + "（body 标记 " + (signals.bodyDarkAttr ? "有" : "无")
+      + " · color-scheme " + (signals.colorScheme === "" ? "未声明" : signals.colorScheme)
+      + " · 系统偏好 " + (signals.prefersDark ? "深色" : "浅色")
+      + " · 底色亮度 " + (signals.bgLuminance === null ? "未知" : signals.bgLuminance.toFixed(2)) + "）");
+    var timeRow = typeof document !== "undefined" ? document.querySelector(".gs-dock-time") : null;
+    add(true, "进度条时间行：" + (timeRow !== null
+      ? "已显示 · " + String(timeRow.textContent || "").trim()
+      : "未显示（形态要选「完整」，或打开了「时间显示」）"));
     add(true, "连接自愈：检查 " + healStats.checks + " 次 · 异常 " + healStats.stuck + " 次 · 自动重载 " + healStats.reloads + " 次");
 
     setSelfCheck({ running: true, lines: lines, ok: false });
@@ -2092,6 +2332,17 @@ function Editor() {
           var stats = rt.stats;
           add(true, "会话识别：" + (rt.sessionId === null || rt.sessionId === undefined ? "还没跑过模型调用" : (rt.exactSession === true ? "精确命中" : "兜底命中（最近跑过的会话）"))
             + " · 上一轮统计：" + (stats === null || stats === undefined ? "暂无" : (stats.rounds + " 次调用 / " + stats.lastMs + "ms / " + stats.lastTokens + " tokens / " + (stats.lastModel || "模型未知"))));
+        }
+        return fetch("/api/greet-signoff/session", { cache: "no-store" })
+          .then(function (response) { return response.ok ? response.json() : null; });
+      })
+      .then(function (si) {
+        if (si !== null && si !== undefined && si.ok === true) {
+          var started = typeof si.startedAt === "number" && isFinite(si.startedAt) && si.startedAt > 0 ? si.startedAt : null;
+          add(started !== null, "会话时间：" + (started === null
+            ? "宿主半没给出会话创建时间（进度条退回本地估算）"
+            : "开始于 " + formatClock(started) + " · 已聊 " + formatDuration(Date.now() - started))
+            + " · " + (si.sessionId === null || si.sessionId === undefined ? "还没跑过模型调用" : (si.exactSession === true ? "按 id 精确命中" : "按 id 查询未命中")));
         }
         report();
       })
@@ -2692,6 +2943,11 @@ function Editor() {
         { value: "right", label: "车头向右 →" },
         { value: "native", label: "原样" }
       ], ui.facing, function (value) { setUiPrefs({ facing: value }); }, "facing"),
+      selectCell("时间显示", [
+        { value: "on", label: "显示（已聊多久 + 还能聊多久）" },
+        { value: "off", label: "不显示" }
+      ], ui.showTime === false ? "off" : "on",
+        function (value) { setUiPrefs({ showTime: value !== "off" }); }, "showTime", true),
       selectCell("小车", (function () {
         var options = BAR_MARKERS.map(function (item) {
           return { value: item.value === "" ? "__none__" : item.value, label: item.label === "" ? "无" : (item.label + " " + item.name) };
@@ -2822,6 +3078,155 @@ function formatTokens(value) {
   if (value >= 1000000) return (value / 1000000).toFixed(1) + "M";
   if (value >= 1000) return (value / 1000).toFixed(1) + "k";
   return String(Math.round(value));
+}
+
+/* ─── 进度条的时间维度：已聊多久 / 还能聊多久（都要真实数字，不做摆设） ──── */
+
+/** 时间行多久走一次（毫秒）。5 秒够"看得见在动"，又不至于让进度条组件每秒重渲染。 */
+var TIME_TICK_MS = 5000;
+/** 会话开始时间的缓存时长：宿主半的答案一分钟问一次就够了。 */
+var SESSION_TTL_MS = 60000;
+/** 采样窗口：只拿最近这段时间的读数算消耗速率（更早的节奏不代表现在）。 */
+var SAMPLE_WINDOW_MS = 45 * 60000;
+/** 采样点上限（5 秒一个点，45 分钟约 540 个，留点余量）。 */
+var SAMPLE_LIMIT = 600;
+
+/**
+ * 毫秒 → 「45 秒 / 12 分 / 1 小时 3 分 / 2 小时」。
+ * @param {number} ms 时长。
+ * @returns {string} 给人看的时长；数字无效时给 "—"。
+ */
+function formatDuration(ms) {
+  if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return "—";
+  var sec = Math.round(ms / 1000);
+  if (sec < 60) return sec + " 秒";
+  var min = Math.round(sec / 60);
+  if (min < 60) return min + " 分";
+  var hours = Math.floor(min / 60);
+  var rest = min % 60;
+  return rest === 0 ? hours + " 小时" : hours + " 小时 " + rest + " 分";
+}
+
+/**
+ * 时间戳 → 本地 "HH:MM"。
+ * @param {number} ms Unix 毫秒。
+ * @returns {string} 时刻；无效时给空串。
+ */
+function formatClock(ms) {
+  if (typeof ms !== "number" || !isFinite(ms) || ms <= 0) return "";
+  var date = new Date(ms);
+  var pad = function (value) { return (value < 10 ? "0" : "") + value; };
+  return pad(date.getHours()) + ":" + pad(date.getMinutes());
+}
+
+/**
+ * 用采样点算"每分钟烧掉多少 token"。
+ * 采样点形如 `{t, used}`，按时间升序；跨度不足 1 分钟、或读数没有净增长时返回 null
+ * （宁可不给估计，也不要给一个假数字）。
+ * @param {Array} samples 采样点。
+ * @returns {number|null} token/分钟。
+ */
+function tokensPerMinute(samples) {
+  if (!Array.isArray(samples) || samples.length < 2) return null;
+  var first = samples[0];
+  var last = samples[samples.length - 1];
+  if (first === null || last === null || typeof first.t !== "number" || typeof last.t !== "number") return null;
+  var spanMs = last.t - first.t;
+  if (!(spanMs >= 60000)) return null;
+  var delta = Number(last.used) - Number(first.used);
+  if (!(delta > 0)) return null;
+  return delta / (spanMs / 60000);
+}
+
+/**
+ * 估算"还能聊多久"：优先用实测速率（token/分钟），退回到"每轮均值 × 已观测的每轮间隔"。
+ * @param {number} remainingTokens 剩余 token。
+ * @param {number|null} ratePerMinute 实测速率。
+ * @param {number|null} turnsLeft 估算还能聊几轮。
+ * @param {number|null} msPerTurn 实测每轮耗时。
+ * @returns {number|null} 毫秒；数据都不够时返回 null。
+ */
+function remainingTimeMs(remainingTokens, ratePerMinute, turnsLeft, msPerTurn) {
+  if (typeof remainingTokens !== "number" || !isFinite(remainingTokens)) return null;
+  if (remainingTokens <= 0) return 0;
+  if (typeof ratePerMinute === "number" && isFinite(ratePerMinute) && ratePerMinute > 0) {
+    return remainingTokens / ratePerMinute * 60000;
+  }
+  if (typeof turnsLeft === "number" && turnsLeft > 0 && typeof msPerTurn === "number" && isFinite(msPerTurn) && msPerTurn > 0) {
+    return turnsLeft * msPerTurn;
+  }
+  return null;
+}
+
+/**
+ * 轮数数组 → 平均每轮耗时（毫秒）；间隔样本少于 2 个时返回 null。
+ * @param {Array} times 每轮读数跳变的时刻（升序）。
+ * @returns {number|null} 平均间隔。
+ */
+function averageTurnMs(times) {
+  if (!Array.isArray(times) || times.length < 3) return null;
+  var sum = 0;
+  var count = 0;
+  for (var i = 1; i < times.length; i += 1) {
+    var gap = times[i] - times[i - 1];
+    if (gap > 0 && gap < 6 * 3600000) { sum += gap; count += 1; }
+  }
+  if (count === 0) return null;
+  return sum / count;
+}
+
+/* ─── 会话开始时间：宿主半给（浏览器半看不到 session.header.createdAt） ──── */
+
+var SESSION_API = API + "/session";
+/** 会话信息缓存：同一会话一分钟内不重复问。 */
+var sessionInfoCache = { key: "", at: 0, data: null };
+/** 拿不到宿主半答案时的本地兜底（按会话 id 记"第一次见到它的时刻"，刷新页面不丢）。 */
+var SESSION_START_KEY = "gs.signoff.starts";
+
+/** 本地兜底：读出/记下某个会话"第一次被这个浏览器看到的时刻"。 */
+function localSessionStart(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+  var map = {};
+  try {
+    var raw = window.localStorage.getItem(SESSION_START_KEY);
+    var parsed = raw === null ? null : JSON.parse(raw);
+    if (parsed !== null && typeof parsed === "object") map = parsed;
+  } catch (error) { map = {}; }
+  var hit = map[sessionId];
+  if (typeof hit === "number" && isFinite(hit) && hit > 0) return hit;
+  var now = Date.now();
+  map[sessionId] = now;
+  // 只留最近的 20 个会话，别把 localStorage 撑大
+  var keys = Object.keys(map);
+  if (keys.length > 20) {
+    keys.sort(function (a, b) { return (map[b] || 0) - (map[a] || 0); });
+    for (var i = 20; i < keys.length; i += 1) delete map[keys[i]];
+  }
+  try { window.localStorage.setItem(SESSION_START_KEY, JSON.stringify(map)); } catch (error) { /* 隐私模式：忽略 */ }
+  return now;
+}
+
+/**
+ * 问宿主半要"这个会话什么时候开始的 + 上一轮统计"。
+ * 失败（插件宿主半没加载 / 网络抖动）时返回上一次的答案（可能是 null），调用方据此退回本地兜底。
+ * @param {string} sessionId 当前会话 id（空串表示"宿主半自己找当前会话"）。
+ * @returns {Promise<Object|null>} 会话信息。
+ */
+function fetchSessionInfo(sessionId) {
+  var key = typeof sessionId === "string" ? sessionId : "";
+  var now = Date.now();
+  if (sessionInfoCache.data !== null && sessionInfoCache.key === key && now - sessionInfoCache.at < SESSION_TTL_MS) {
+    return Promise.resolve(sessionInfoCache.data);
+  }
+  var url = SESSION_API + (key.length > 0 ? "?sessionId=" + encodeURIComponent(key) : "");
+  return fetch(url, { cache: "no-store", headers: { accept: "application/json" } })
+    .then(function (response) { return response.ok ? response.json() : null; })
+    .then(function (data) {
+      if (data === null || data === undefined || data.ok !== true) return sessionInfoCache.data;
+      sessionInfoCache = { key: key, at: Date.now(), data: data };
+      return data;
+    })
+    .catch(function () { return sessionInfoCache.data; });
 }
 
 /**
@@ -3019,24 +3424,79 @@ function GreetDock(props) {
 
   // 百分比直接取投影的实时值（不再节流）：车头上的数字随占用实时变化。
   var hasReading = occupancy !== null;
+  // ── 时间维度：① 已聊多久（宿主半给的会话创建时间，拿不到退回本地记的"第一次见到"）
+  //               ② 还能聊多久（按实测 token/分钟，数据不够退回轮数估算）
+  // 两个来源都要"真的在走"：读数每 5 秒重算一次，进度条不再是一张贴上去就不动的图。
+  var sessionId = props !== null && props !== undefined && props.session !== null && props.session !== undefined
+    && typeof props.session.sessionId === "string" ? props.session.sessionId : "";
+  var nowPair = React.useState(function () { return Date.now(); });
+  var now = nowPair[0];
+  var setNow = nowPair[1];
+  var infoPair = React.useState(null);
+  var sessionInfo = infoPair[0];
+  var setSessionInfo = infoPair[1];
+  var localPair = React.useState(null);
+  var localStart = localPair[0];
+  var setLocalStart = localPair[1];
+  React.useEffect(function () {
+    var timer = window.setInterval(function () {
+      // 页面在后台时不折腾：DSH 常挂着，后台每分钟重渲染没意义
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      setNow(Date.now());
+    }, TIME_TICK_MS);
+    return function () { window.clearInterval(timer); };
+  }, []);
+  React.useEffect(function () {
+    setLocalStart(sessionId.length === 0 ? null : localSessionStart(sessionId));
+  }, [sessionId]);
+  React.useEffect(function () {
+    var alive = true;
+    function pull() {
+      fetchSessionInfo(sessionId).then(function (data) {
+        if (!alive) return;
+        if (data !== null && data !== undefined && typeof data === "object") setSessionInfo(data);
+      });
+    }
+    pull();
+    var timer = window.setInterval(pull, SESSION_TTL_MS);
+    return function () { alive = false; window.clearInterval(timer); };
+  }, [sessionId]);
+
   // 采样"每一轮大概吃掉多少 token"：占用只在下一轮请求过后才跳一截，
   // 因此把 >200 的正向增量当作一次"又走了一轮"，取最近几次的均值来估算还能聊几轮。
-  var samplerRef = React.useRef({ last: null, jumps: [] });
+  var samplerRef = React.useRef({ last: null, jumps: [], samples: [], jumpTimes: [], lastUsedAt: 0 });
   var usedTokens = hasReading ? occupancy.used : -1;
   React.useEffect(function () {
     if (usedTokens < 0) return;
     var sampler = samplerRef.current;
-    if (sampler.last === null) { sampler.last = usedTokens; return; }
+    var stamp = Date.now();
+    if (sampler.last === null) { sampler.last = usedTokens; sampler.lastUsedAt = stamp; return; }
     var delta = usedTokens - sampler.last;
     if (delta > 200) {
       sampler.jumps.push(delta);
       if (sampler.jumps.length > 6) sampler.jumps.shift();
+      sampler.jumpTimes.push(stamp);
+      if (sampler.jumpTimes.length > 12) sampler.jumpTimes.shift();
       sampler.last = usedTokens;
+      sampler.lastUsedAt = stamp;
     } else if (delta < -200) {
-      // 压缩/清空导致占用回落：重置基线，别把负数算进每轮成本
+      // 压缩/清空导致占用回落：重置基线，别把负数算进每轮成本，也别让速率被这次回落带偏
       sampler.last = usedTokens;
+      sampler.lastUsedAt = stamp;
+      sampler.samples = [];
     }
   }, [usedTokens]);
+  // 时间轴采样：每次读数走一下或占用变了就记一个 {时刻, 占用} 点，用来算"每分钟烧多少 token"。
+  React.useEffect(function () {
+    if (!hasReading || usedTokens < 0) return;
+    var sampler = samplerRef.current;
+    var tail = sampler.samples.length === 0 ? null : sampler.samples[sampler.samples.length - 1];
+    if (tail !== null && tail.used === usedTokens && now - tail.t < TIME_TICK_MS) return;
+    sampler.samples.push({ t: now, used: usedTokens });
+    if (sampler.samples.length > SAMPLE_LIMIT) sampler.samples.shift();
+    var cutoff = now - SAMPLE_WINDOW_MS;
+    while (sampler.samples.length > 2 && sampler.samples[0].t < cutoff) sampler.samples.shift();
+  }, [now, usedTokens, hasReading]);
   var jumps = samplerRef.current.jumps;
   var avgPerTurn = null;
   if (jumps.length > 0) {
@@ -3059,6 +3519,47 @@ function GreetDock(props) {
   var shortText = hasReading
     ? percent + "% · 剩余 ~" + formatTokens(remaining) + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮" : "")
     : "上下文占用未知";
+
+  // ── 时间维度：把"已聊多久 / 还能聊多久"算出来并拼进提示与那一行文字 ──────────
+  var startedAt = sessionInfo !== null && sessionInfo !== undefined && typeof sessionInfo.startedAt === "number"
+    && isFinite(sessionInfo.startedAt) && sessionInfo.startedAt > 0
+    ? sessionInfo.startedAt
+    : (typeof localStart === "number" && isFinite(localStart) && localStart > 0 ? localStart : null);
+  var startedFromServer = startedAt !== null && sessionInfo !== null && sessionInfo !== undefined
+    && typeof sessionInfo.startedAt === "number" && sessionInfo.startedAt === startedAt;
+  var elapsedMs = startedAt === null ? null : Math.max(0, now - startedAt);
+  var elapsedText = elapsedMs === null ? "" : formatDuration(elapsedMs);
+  var startClock = formatClock(startedAt === null ? 0 : startedAt);
+  // 实测消耗速率：拿最近 45 分钟的读数采样点算 token/分钟；不足 1 分钟的数据宁可不算。
+  var samples = Array.isArray(samplerRef.current.samples) ? samplerRef.current.samples : [];
+  var ratePerMinute = tokensPerMinute(samples);
+  var msPerTurn = averageTurnMs(samplerRef.current.jumpTimes);
+  var etaMs = hasReading ? remainingTimeMs(remaining, ratePerMinute, turnsLeft, msPerTurn) : null;
+  var etaText = etaMs === null ? "" : formatDuration(etaMs);
+  var etaFromRate = ratePerMinute !== null;
+  // 读数新鲜度：token 读数只在上一次请求结束后才更新，说清楚"这是几分钟前的读数"，
+  // 免得看着时间在走、百分比不动就以为进度条坏了。
+  var readingAgeMs = samplerRef.current.lastUsedAt > 0 ? Math.max(0, now - samplerRef.current.lastUsedAt) : null;
+  var staleText = readingAgeMs !== null && readingAgeMs >= 120000 ? "上次读数 " + formatDuration(readingAgeMs) + "前" : "";
+  if (elapsedText !== "") {
+    detail += " · 已聊 " + elapsedText + (startClock === "" ? "" : "（本会话开始于 " + startClock + (startedFromServer ? "" : "，本地估算") + "）");
+  }
+  if (etaText !== "") {
+    if (etaFromRate) {
+      detail += " · 实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分 → 预计还能聊 ~" + etaText;
+    } else {
+      detail += " · 预计还能聊 ~" + etaText
+        + "（按同一节奏估：约 " + formatDuration(msPerTurn) + "/轮）";
+    }
+  }
+  if (staleText !== "") detail += " · " + staleText;
+  tip = detail;
+  var shortParts = [hasReading ? percent + "%" : "上下文占用未知"];
+  if (elapsedText !== "") shortParts.push("已聊 " + elapsedText);
+  if (etaText !== "") shortParts.push("还能聊 ~" + etaText);
+  else if (turnsLeft !== null) shortParts.push("约还能聊 " + turnsLeft + " 轮");
+  if (hasReading) shortParts.push("剩余 ~" + formatTokens(remaining));
+  shortText = shortParts.join(" · ");
   var alertLine = alert.line;
   // 超过阈值时给一个"开新会话"按钮：客户端 uiWorkspace 服务提供 startSession()。
   // 该服务是可选的，拿不到就只显示文字提醒，不显示按钮。
@@ -3166,6 +3667,23 @@ function GreetDock(props) {
       ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
       : null
   );
+  // 进度条下的时间行（"完整"形态才有；紧凑/纯文字形态把时间并进那一行文字里）。
+  // 两个数字都来自真实数据：会话创建时间 + 实测 token/分钟，并且每 5 秒跟着走。
+  var showTime = ui.showTime !== false;
+  var timeNode = !showTime || (elapsedText === "" && etaText === "" && turnsLeft === null) ? null
+    : React.createElement("div", { className: "gs-dock-time", title: detail },
+      React.createElement("span", null, "⏱ 已聊 ",
+        React.createElement("b", null, elapsedText === "" ? "—" : elapsedText)),
+      etaText !== ""
+        ? React.createElement("span", null, "预计还能聊 ", React.createElement("b", null, "~" + etaText))
+        : (turnsLeft !== null
+            ? React.createElement("span", null, "预计还能聊 ", React.createElement("b", null, "~" + turnsLeft + " 轮"))
+            : null),
+      etaText !== "" && etaFromRate
+        ? React.createElement("span", null, "实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分")
+        : null,
+      staleText === "" ? null : React.createElement("span", null, "· " + staleText)
+    );
   return React.createElement("div", {
     className: dockClass,
     ref: dockRef,
@@ -3180,7 +3698,8 @@ function GreetDock(props) {
   },
     React.createElement("div", { className: "gs-tip" }, tip),
     React.createElement("div", { className: "gs-dock-row", style: rowStyle },
-      display === "text" ? textNode : barNode
+      display === "text" ? textNode : barNode,
+      display === "full" ? timeNode : null
     ),
     display === "text" || alertLine === null ? null : React.createElement("div", { className: "gs-dock-alert" },
       React.createElement("span", { className: "gs-dock-alert-text" }, alertLine),
@@ -3249,9 +3768,11 @@ function chatCss(config) {
     if (typeof line.text !== "string" || line.text.trim().length === 0) return;
     var cls = ".gs-chat-" + pair[0].toLowerCase();
     rules.push(cls + "{" + lineCssDecls(line, false) + "}");
-    // 深色主题专用：宿主用 body[data-ds-dark-theme] 标记深色，这条选择器权重更高，会覆盖上面的规则
+    // 深色档：两条选择器并行生效——
+    //   ① body[data-ds-dark-theme]：DSH 官方深色主题；
+    //   ② html[data-gs-dark="1"]：综合判定的结果（dark-only 皮肤只改 CSS 变量、不加官方属性，靠这条兜住）。
     if (line.colorDark !== "" || line.bgColorDark !== "" || line.borderColorDark !== "") {
-      darkRules.push("body[data-ds-dark-theme] " + cls + "{" + lineCssDecls(line, true) + "}");
+      darkRules.push('body[data-ds-dark-theme] ' + cls + ',html[data-gs-dark="1"] ' + cls + '{' + lineCssDecls(line, true) + '}');
     }
     if (typeof line.image === "string" && line.image.length > 0) {
       rules.push(cls + ".gs-chat-img::before{height:" + line.imageHeight + "px;width:" +
@@ -4201,6 +4722,12 @@ var stylerStats = {
  */
 function apply(ctx) {
   pluginCtx = ctx;
+  // 方案 C：先把深浅判定装起来（结果写到 <html data-gs-dark>）。
+  // 对话里那两行的深色档 CSS 就挂在这个标记上，所以它必须在贴样式之前算出来。
+  ctx.effect(function () {
+    ensureDarkWatch();
+    return disposeDarkWatch;
+  }, "greet-signoff:dark-watch");
   ctx.effect(function () {
     var tag = document.createElement("style");
     tag.dataset.plugin = "dsh-greet-signoff";
@@ -4266,6 +4793,17 @@ module.exports = {
     validate: validate,
     occupancyOf: occupancyOf,
     formatTokens: formatTokens,
+    // 深浅判定（方案 C）与进度条时间维度
+    parseCssRgb: parseCssRgb,
+    colorLuminance: colorLuminance,
+    darkFromSignals: darkFromSignals,
+    isDarkTheme: isDarkTheme,
+    chatCss: chatCss,
+    formatDuration: formatDuration,
+    formatClock: formatClock,
+    tokensPerMinute: tokensPerMinute,
+    remainingTimeMs: remainingTimeMs,
+    averageTurnMs: averageTurnMs,
     hexToRgb: hexToRgb,
     mixRgb: mixRgb,
     rampColor: rampColor,

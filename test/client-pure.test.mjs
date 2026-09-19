@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -387,4 +387,77 @@ test('lineStyleSource：复制外观时不带走文案与图片', () => {
   const merged = Object.assign({}, target, style)
   assert.equal(merged.text, '收尾语')
   assert.equal(merged.fontSize, 18)
+})
+
+
+test('深浅判定（方案 C）：四条证据任一成立就算深色', () => {
+  assert.equal(t.darkFromSignals({}), false)
+  assert.equal(t.darkFromSignals(undefined), false)
+  assert.equal(t.darkFromSignals({ bodyDarkAttr: true }), true)
+  assert.equal(t.darkFromSignals({ colorScheme: 'dark' }), true)
+  // dark-only 皮肤常见写法：只声明 color-scheme，不加 body 属性
+  assert.equal(t.darkFromSignals({ colorScheme: 'light dark' }), true)
+  assert.equal(t.darkFromSignals({ colorScheme: 'light' }), false)
+  assert.equal(t.darkFromSignals({ colorScheme: '' }), false)
+  assert.equal(t.darkFromSignals({ prefersDark: true }), true)
+  assert.equal(t.darkFromSignals({ bgLuminance: 0.08 }), true)
+  assert.equal(t.darkFromSignals({ bgLuminance: 0.92 }), false)
+  assert.equal(t.darkFromSignals({ bgLuminance: null }), false)
+  assert.equal(t.darkFromSignals({ colorScheme: 'light', prefersDark: false, bgLuminance: 0.9 }), false)
+})
+
+test('颜色解析与亮度：rgb/rgba/hex，全透明等于看不出底色', () => {
+  assert.deepEqual(t.parseCssRgb('#fff'), [255, 255, 255])
+  assert.deepEqual(t.parseCssRgb('#0f172a'), [15, 23, 42])
+  assert.deepEqual(t.parseCssRgb('rgb(17 24 39)'), [17, 24, 39])
+  assert.deepEqual(t.parseCssRgb('rgb(17, 24, 39)'), [17, 24, 39])
+  assert.equal(t.parseCssRgb('rgba(0, 0, 0, 0)'), null)
+  assert.equal(t.parseCssRgb('transparent'), null)
+  assert.equal(t.parseCssRgb(''), null)
+  assert.equal(t.colorLuminance('#000000'), 0)
+  assert.ok(Math.abs(t.colorLuminance('#ffffff') - 1) < 1e-9, '白色亮度应为 1（浮点误差内）')
+  assert.equal(t.colorLuminance('rgba(0,0,0,0)'), null)
+  assert.ok(t.colorLuminance('#0f172a') < 0.5, '深色底应判为暗')
+  assert.ok(t.colorLuminance('#f8fafc') > 0.5, '浅色底应判为亮')
+})
+
+test('chatCss：深色档同时挂 body 属性与 html[data-gs-dark]', () => {
+  const config = t.normalize({
+    greeting: { text: '开场', color: '#e0721a', colorDark: '#ffb545' },
+    signOff: { text: '收尾' },
+  })
+  const css = t.chatCss(config)
+  assert.ok(css.indexOf('body[data-ds-dark-theme] .gs-chat-greeting') >= 0, css)
+  assert.ok(css.indexOf('html[data-gs-dark="1"] .gs-chat-greeting') >= 0, css)
+  assert.ok(css.indexOf('#ffb545') >= 0, '深色档颜色应在规则里')
+  // 没配深色值的那一行不生成深色规则（留空仍回落浅色档）
+  assert.equal(css.indexOf('html[data-gs-dark="1"] .gs-chat-signoff'), -1)
+})
+
+test('时长与时刻格式化', () => {
+  assert.equal(t.formatDuration(45 * 1000), '45 秒')
+  assert.equal(t.formatDuration(12 * 60000), '12 分')
+  assert.equal(t.formatDuration(63 * 60000), '1 小时 3 分')
+  assert.equal(t.formatDuration(120 * 60000), '2 小时')
+  assert.equal(t.formatDuration(-1), '—')
+  assert.equal(t.formatDuration(Number.NaN), '—')
+  assert.equal(t.formatClock(new Date('2026-09-20T09:05:00').getTime()), '09:05')
+  assert.equal(t.formatClock(0), '')
+})
+
+test('消耗速率与剩余时间：数据不够时宁可不给估计', () => {
+  assert.equal(t.tokensPerMinute([]), null)
+  assert.equal(t.tokensPerMinute([{ t: 0, used: 1000 }]), null)
+  assert.equal(t.tokensPerMinute([{ t: 0, used: 1000 }, { t: 30000, used: 5000 }]), null, '跨度不足 1 分钟不算')
+  assert.equal(t.tokensPerMinute([{ t: 0, used: 5000 }, { t: 120000, used: 4000 }]), null, '读数没净增长不算')
+  assert.equal(t.tokensPerMinute([{ t: 0, used: 1000 }, { t: 120000, used: 5000 }]), 2000)
+  // 有实测速率 → 按速率
+  assert.equal(t.remainingTimeMs(100000, 2000, null, null), 3000000)
+  // 没速率 → 退回"轮数 × 每轮耗时"
+  assert.equal(t.remainingTimeMs(100000, null, 5, 60000), 300000)
+  // 都没有 → null（不编数字）
+  assert.equal(t.remainingTimeMs(100000, null, null, null), null)
+  assert.equal(t.remainingTimeMs(0, 2000, null, null), 0)
+  assert.equal(t.averageTurnMs([0]), null)
+  assert.equal(t.averageTurnMs([0, 60000, 180000]), 90000)
 })

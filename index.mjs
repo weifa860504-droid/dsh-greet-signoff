@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.10.0'
+const HOST_VERSION = '1.11.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -691,9 +691,21 @@ function resolveRuntimeVars(text, stats) {
 }
 
 /**
+ * 会话的创建时间（durable session.header.createdAt，Unix 毫秒）。
+ * 浏览器半看不到 header，所以进度条的"已聊多久"要问宿主半要这个数。
+ * @param {object|undefined} session 会话对象。
+ * @returns {number|undefined} 毫秒时间戳；拿不到返回 undefined。
+ */
+function sessionStartedAtOf(session) {
+  const header = session === undefined || session === null ? undefined : session.header
+  const value = header === undefined || header === null ? undefined : header.createdAt
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+/**
  * 当前正在组装提示的会话。
  * 优先用 `agents.currentInitiator()`（精确命中），取不到时退回"最近跑过一轮的会话"。
- * @returns {{id: string|undefined, exact: boolean}} 会话 id 与是否是精确命中。
+ * @returns {{id: string|undefined, exact: boolean, cwd: string|undefined, startedAt: number|undefined}} 会话信息。
  */
 function currentSessionIdInfo() {
   try {
@@ -704,13 +716,34 @@ function currentSessionIdInfo() {
       const cwd = session !== undefined && session !== null && session.header !== undefined
         ? (typeof session.header.cwd === 'string' ? session.header.cwd : undefined)
         : undefined
-      if (typeof agent.id === 'string' && agent.id.length > 0) return { id: agent.id, exact: true, cwd }
+      const startedAt = sessionStartedAtOf(session)
+      if (typeof agent.id === 'string' && agent.id.length > 0) return { id: agent.id, exact: true, cwd, startedAt }
       if (session !== undefined && session !== null && typeof session.id === 'string' && session.id.length > 0) {
-        return { id: session.id, exact: true, cwd }
+        return { id: session.id, exact: true, cwd, startedAt }
       }
     }
   } catch (error) { /* 服务形态变了就退回兜底 */ }
-  return { id: lastStatsSessionId, exact: false, cwd: undefined }
+  return { id: lastStatsSessionId, exact: false, cwd: undefined, startedAt: undefined }
+}
+
+/**
+ * 按 id 取会话信息（进度条显示哪个会话就问哪个会话，而不是"当前正在跑的那个"）。
+ * 找不到就返回拿着 id 的"未命中"结果：上一轮统计仍按 id 查得到，创建时间留给浏览器半本地估算。
+ * @param {string|undefined} wanted 会话 id；缺省时退回"当前会话"。
+ * @returns {{id: string|undefined, exact: boolean, cwd: string|undefined, startedAt: number|undefined}} 会话信息。
+ */
+function resolveSessionInfo(wanted) {
+  if (typeof wanted !== 'string' || wanted.length === 0) return currentSessionIdInfo()
+  try {
+    const agents = pluginCtx === null ? undefined : pluginCtx.get('agents')
+    const agent = agents === undefined || agents === null ? undefined : agents.get(wanted)
+    const session = agent === undefined || agent === null ? undefined : agent.session
+    if (session !== undefined && session !== null) {
+      const cwd = session.header !== undefined && typeof session.header.cwd === 'string' ? session.header.cwd : undefined
+      return { id: wanted, exact: true, cwd, startedAt: sessionStartedAtOf(session) }
+    }
+  } catch (error) { /* 落到未命中分支 */ }
+  return { id: wanted, exact: false, cwd: undefined, startedAt: undefined }
 }
 
 /**
@@ -822,6 +855,32 @@ function handleApi(req, res) {
     })
     return
   }
+  // /api/greet-signoff/session → 进度条的"时间功能"要的两样东西：
+  //   ① 本会话的创建时间（浏览器半看不到 session.header.createdAt）；
+  //   ② 本会话上一轮统计。带 ?sessionId= 时按 id 精确查——进度条显示哪个会话就问哪个会话。
+  if (pathname === `${API_PATH}/session`) {
+    const rawUrl = String(req.url ?? '')
+    const idMatch = /[?&]sessionId=([^&]*)/.exec(rawUrl)
+    const wanted = idMatch === null ? undefined : decodeURIComponent(idMatch[1])
+    const info = resolveSessionInfo(wanted)
+    const stats = statsFor(info.id)
+    sendJson(res, 200, {
+      ok: true,
+      hostVersion: HOST_VERSION,
+      sessionId: info.id ?? null,
+      exactSession: info.exact,
+      startedAt: typeof info.startedAt === 'number' ? info.startedAt : null,
+      now: Date.now(),
+      stats: stats === undefined ? null : {
+        rounds: stats.rounds,
+        lastMs: stats.lastMs,
+        lastTokens: stats.lastTokens,
+        lastModel: stats.lastModel,
+        lastAt: typeof stats.lastAt === 'number' ? stats.lastAt : null,
+      },
+    })
+    return
+  }
   if (method === 'GET') {
     sendJson(res, 200, { ok: true, path: FILE_PATH, hostVersion: HOST_VERSION, config: readConfig() })
     return
@@ -895,6 +954,7 @@ export const __test = {
   resolveTemplate,
   formatElapsed,
   formatTokenCount,
+  sessionStartedAtOf,
   sanitizePool,
   sanitizePoolList,
   sanitizeScenes,
