@@ -2,7 +2,7 @@
  * 开场语与收尾语 — 常驻插件（宿主半）
  *
  * 职责：
- *  1. 读取配置文件（默认 <DSH_HOME>/greet-signoff.json），向系统提示注册一段「开场与收尾」规则，
+ *  1. 读取配置文件（默认 <插件目录>/config/greet-signoff.json），向系统提示注册一段「开场与收尾」规则，
  *     让模型每次回复的正文都以配置的开场行开头、收尾行结尾；
  *  2. 提供同源 HTTP 接口，供页面上的设置编辑器读写配置：GET/POST /api/greet-signoff。
  *
@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.21.0'
+const HOST_VERSION = '1.22.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -85,8 +85,29 @@ const DSH_HOME = process.env.DSH_HOME && process.env.DSH_HOME.length > 0
   ? process.env.DSH_HOME
   : join(process.env.USERPROFILE ?? process.cwd(), '.dsh')
 
-const FILE_PATH = join(DSH_HOME, 'greet-signoff.json')
-const ASSET_DIR = join(DSH_HOME, 'greet-signoff-assets')
+/** 插件包根目录（junction 装载时 Node 会解析到真实路径）。 */
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+/**
+ * 插件自有数据目录（配置文件 + 图片附件）。
+ * 解析顺序：
+ *   1. 环境变量 DSH_GREET_SIGNOFF_HOME（想把数据放别处时用，相对路径按插件目录解析）；
+ *   2. 插件自带的 config/ 子目录 —— 默认值：插件搬到哪，配置跟到哪；
+ *   3. 旧的 $DSH_HOME —— 自带 config/ 还不存在时（首次运行 / 老用户还留在原地的配置 /
+ *      被装进 node_modules 当依赖的场景）继续用原来的位置，行为与 1.21.0 一致。
+ */
+function resolveDataHome() {
+  const fromEnv = (process.env.DSH_GREET_SIGNOFF_HOME ?? '').trim()
+  if (fromEnv.length > 0) return resolve(PLUGIN_DIR, fromEnv)
+  const inPlugin = join(PLUGIN_DIR, 'config')
+  if (existsSync(join(inPlugin, 'greet-signoff.json'))) return inPlugin
+  if (existsSync(join(DSH_HOME, 'greet-signoff.json'))) return DSH_HOME
+  if (PLUGIN_DIR.split(sep).includes('node_modules')) return DSH_HOME
+  return inPlugin
+}
+
+const DATA_HOME = resolveDataHome()
+const FILE_PATH = join(DATA_HOME, 'greet-signoff.json')
+const ASSET_DIR = join(DATA_HOME, 'greet-signoff-assets')
 const CLIENT_PATH = fileURLToPath(new URL('./client.js', import.meta.url))
 /** 表情中文名/关键词索引（1.2.0 起从 client.js 里搬出来，首次打开表情框才加载）。 */
 const EMOJI_INDEX_PATH = fileURLToPath(new URL('./emoji-zh.json', import.meta.url))
@@ -195,6 +216,14 @@ const DEFAULT_CONFIG = {
   scenes: { active: '', items: [] },
   /** 按工作区自动换文案：命中当前会话的工作目录时，用这一条的文案（优先级最高）。 */
   perWorkspace: { enabled: false, items: [] },
+  /**
+   * 三个独立总开关（v1.22.0）：
+   *   greeting   开场语   —— 关掉后提示段里不再要求模型写这一行；
+   *   signOff    收尾语   —— 同上；
+   *   contextBar 上下文卡 —— 纯页面显示（输入框上方那条进度条/读数/到线横幅），关掉后整块不渲染。
+   * 缺字段 = 开（老配置行为不变）；只有明确写成 false 才算关。
+   */
+  switches: { greeting: true, signOff: true, contextBar: true },
 }
 
 /** 一句池子文案的清洗：去首尾空白、丢掉空行、截到上限。 */
@@ -219,6 +248,22 @@ function sanitizePool(raw) {
     mode: pickEnum(src.mode, POOL_MODES, 'random'),
     greeting: sanitizePoolList(src.greeting),
     signOff: sanitizePoolList(src.signOff),
+  }
+}
+
+/**
+ * 三个总开关的清洗（v1.22.0）。
+ * 只认"明确写成 false"为关，其余一律为开 —— 老配置没有这个字段、坏值、字符串都能安全回落，
+ * 保证"升级后功能突然消失"这种事不会发生。
+ * @param {unknown} raw 原始字段。
+ * @returns {{greeting: boolean, signOff: boolean, contextBar: boolean}} 清洗后的开关。
+ */
+function sanitizeSwitches(raw) {
+  const src = raw !== null && typeof raw === 'object' ? raw : {}
+  return {
+    greeting: src.greeting !== false,
+    signOff: src.signOff !== false,
+    contextBar: src.contextBar !== false,
   }
 }
 
@@ -506,6 +551,7 @@ function normalizeCore(raw) {
     legacyLines: sanitizeLegacyLines(base.legacyLines),
     pool: sanitizePool(base.pool),
     perWorkspace: sanitizeWorkspaceBindings(base.perWorkspace),
+    switches: sanitizeSwitches(base.switches),
   }
 }
 
@@ -1998,6 +2044,7 @@ export const __test = {
   sessionStartedAtOf,
   sanitizePool,
   sanitizePoolList,
+  sanitizeSwitches,
   sanitizeScenes,
   scenesOf,
   sanitizeWorkspaceBindings,
@@ -2038,8 +2085,11 @@ export const __test = {
 function ruleTextWith(config, stats, cwd) {
   const now = new Date()
   const binding = matchWorkspaceBinding(config.perWorkspace, cwd)
-  const greeting = pickLine(config, 'greeting', now, stats, binding).trim()
-  const signOff = pickLine(config, 'signOff', now, stats, binding).trim()
+  // 总开关（v1.22.0）：关掉的那一行直接不参与挑选，也不写进提示段 ——
+  // 不调用 pickLine 是为了不白白推进文案池的轮换游标（关着的行不该吃配额）。
+  const switches = sanitizeSwitches(config !== null && typeof config === 'object' ? config.switches : undefined)
+  const greeting = switches.greeting ? pickLine(config, 'greeting', now, stats, binding).trim() : ''
+  const signOff = switches.signOff ? pickLine(config, 'signOff', now, stats, binding).trim() : ''
   if (greeting.length === 0 && signOff.length === 0) return ''
   const lines = ['开场与收尾（本会话强制要求 / mandatory for every reply）：']
   if (greeting.length > 0) lines.push(`- 每一次回复的正文都必须以这一行原样开头：${greeting}`)

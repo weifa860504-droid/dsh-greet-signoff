@@ -9,6 +9,9 @@ pnpm-debug.log*
 *.bak-*
 *.bak.*
 
+# 运行时数据（配置 + 图片附件）：跟插件走，但不入库
+config/
+
 # 编辑器与系统
 .DS_Store
 Thumbs.db

@@ -782,3 +782,58 @@ test('宿主半：parseContextTimeline 带出 pace 字段（老投影没有请�
   assert.equal(missing.pace.requestCount, 0)
   assert.equal(missing.pace.lastRequestAt, null)
 })
+
+/* ── v1.22.0：三个总开关（开场语 / 收尾语 / 上下文卡） ───────────────── */
+
+test('宿主半：总开关清洗只认明确 false（缺字段 / 坏值 / 老配置一律为开）', () => {
+  assert.deepEqual(h.sanitizeSwitches(undefined), { greeting: true, signOff: true, contextBar: true })
+  assert.deepEqual(h.sanitizeSwitches(null), { greeting: true, signOff: true, contextBar: true })
+  assert.deepEqual(h.sanitizeSwitches({ greeting: false }), { greeting: false, signOff: true, contextBar: true })
+  // 手改坏的值（字符串 / 0 / 空对象）不算"关"，宁可照旧工作也不让功能凭空消失
+  assert.equal(h.sanitizeSwitches({ signOff: 'no' }).signOff, true)
+  assert.equal(h.sanitizeSwitches({ contextBar: 0 }).contextBar, true)
+  assert.equal(h.sanitizeSwitches('nope').greeting, true)
+  // normalize 会一路带上它（老配置文件没有这个字段时补成"全开"）
+  assert.deepEqual(h.normalize({}).switches, { greeting: true, signOff: true, contextBar: true })
+  assert.equal(h.normalize({ switches: { greeting: false } }).switches.greeting, false)
+})
+
+test('宿主半：关掉的那一行不写进提示段，另一行照旧', () => {
+  const raw = { greeting: { text: '开场甲' }, signOff: { text: '收尾乙' } }
+
+  const both = h.ruleTextWith(h.normalize(raw), STATS)
+  assert.match(both, /开场甲/)
+  assert.match(both, /收尾乙/)
+
+  const noGreeting = h.ruleTextWith(h.normalize(Object.assign({}, raw, { switches: { greeting: false } })), STATS)
+  assert.ok(!noGreeting.includes('开场甲'), '关掉的开场语不该出现在提示段里')
+  assert.match(noGreeting, /收尾乙/, '没关的那一行必须照旧')
+  assert.match(noGreeting, /每一次回复的正文都必须以这一行原样结尾/)
+
+  const noSignOff = h.ruleTextWith(h.normalize(Object.assign({}, raw, { switches: { signOff: false } })), STATS)
+  assert.match(noSignOff, /开场甲/)
+  assert.ok(!noSignOff.includes('收尾乙'))
+
+  // 两个都关 → 整段不渲染（返回空串，DSH 就不会插这段提示）
+  const none = h.ruleTextWith(h.normalize(Object.assign({}, raw, { switches: { greeting: false, signOff: false } })), STATS)
+  assert.equal(none, '')
+})
+
+test('宿主半：关掉的行连文案池都不碰（池子开着也按开关走）', () => {
+  const config = h.normalize({
+    greeting: { text: '' },
+    signOff: { text: '' },
+    pool: { enabled: true, mode: 'sequence', greeting: ['甲句', '乙句'], signOff: [] },
+    switches: { greeting: false },
+  })
+  assert.equal(h.ruleTextWith(config, STATS), '', '关掉的行不该再从池子里挑句')
+  // 只关一半：收尾仍从池子里出（这里收尾池为空 → 用固定文案 "✅ …" 之外的场景就不测了，
+  // 只要确认"关掉的那一行没被挑进来"即可）
+  const half = h.normalize({
+    greeting: { text: '固定开场' },
+    signOff: { text: '固定收尾' },
+    switches: { greeting: false },
+  })
+  assert.equal(h.ruleTextWith(half, STATS).includes('固定开场'), false)
+  assert.equal(h.ruleTextWith(half, STATS).includes('固定收尾'), true)
+})

@@ -426,7 +426,7 @@ var LEGACY_LINES_MAX = 8;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.21.0";
+var CLIENT_VERSION = "1.22.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -572,7 +572,9 @@ var DEFAULTS = {
   // 场景：整份配置的快照（文案 + 样式 + 阈值 + 文案池），用于"工作 / 生活 / 深夜"一键整体切换。
   scenes: { active: "", items: [] },
   // 按工作区自动换文案：命中当前会话的工作目录时用这一条的文案（优先级最高）。
-  perWorkspace: { enabled: false, items: [] }
+  perWorkspace: { enabled: false, items: [] },
+  // 三个独立总开关（v1.22.0）：开场语 / 收尾语 / 输入框上方那条上下文卡，各关各的。
+  switches: { greeting: true, signOff: true, contextBar: true }
 };
 
 /** 按工作区绑定：最多几条（与宿主半保持一致）。 */
@@ -1011,6 +1013,25 @@ function css() {
     ".gs-shadow-medium{box-shadow:0 3px 10px rgba(0,0,0,.2)}",
     ".gs-shadow-strong{box-shadow:0 6px 18px rgba(0,0,0,.28)}",
     ".gs-shadow-glow{box-shadow:0 0 10px currentColor}",
+    /* ── 三个总开关（v1.22.0）：苹果（iOS）样式的滑动开关 ──
+       真身是 checkbox（键盘、屏幕阅读器都能用），轨道与滑块由两层 span 画出来。
+       尺寸 51×31 / 滑块 27 是 iOS 的原生比例，滑块位移 20px = 51 - 2×2 - 27。 */
+    ".gs-master{display:grid;grid-template-columns:repeat(auto-fit,minmax(212px,1fr));gap:10px}",
+    ".gs-master-item{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--dsw-alias-bg-layer-1)}",
+    ".gs-master-off{background:0 0}",
+    ".gs-master-head{display:flex;align-items:center;justify-content:space-between;gap:10px}",
+    ".gs-master-name{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}",
+    ".gs-switch{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;-webkit-user-select:none;user-select:none}",
+    ".gs-switch input{position:absolute;width:0;height:0;margin:0;padding:0;border:0;opacity:0}",
+    ".gs-switch-track{position:relative;display:inline-block;flex:none;width:51px;height:31px;border-radius:16px;background:#e9e9eb;transition:background-color .26s cubic-bezier(.4,0,.2,1)}",
+    ".gs-switch-thumb{position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);transition:transform .26s cubic-bezier(.4,0,.2,1)}",
+    ".gs-switch input:checked + .gs-switch-track{background:#34c759}",
+    ".gs-switch input:checked + .gs-switch-track .gs-switch-thumb{transform:translateX(20px)}",
+    ".gs-switch input:focus-visible + .gs-switch-track{box-shadow:0 0 0 3px rgba(52,199,89,.35)}",
+    ".gs-switch-state{font-size:12px;color:var(--dsw-alias-label-caption);min-width:12px}",
+    'html[data-gs-dark="1"] .gs-switch-track{background:#39393d}',
+    'html[data-gs-dark="1"] .gs-switch input:checked + .gs-switch-track{background:#30d158}',
+    "@media (prefers-reduced-motion: reduce){.gs-switch-track,.gs-switch-thumb{transition:none !important}}",
     "@media (prefers-reduced-motion: reduce){.gs-line,.gs-line span{animation:none !important}}",
     /* 系统开了"减少动态效果"时：进度条的呼吸告警、小车上下浮动、光标动画一并停掉 */
     "@media (prefers-reduced-motion: reduce){.gs-dock-fill,.gs-marker,.gs-marker-emoji,.gs-marker-img{animation:none !important;transition:none !important}}"
@@ -1107,6 +1128,33 @@ function sanitizeLegacyLines(raw) {
   return out;
 }
 
+/**
+ * 三个总开关的清洗（v1.22.0）：只认"明确写成 false"为关，其余一律为开。
+ * 老配置没有这个字段、字段被手改坏、或者从旧宿主半读回来（它会丢掉未知字段），
+ * 都回落成"全开" —— 升级后功能不会凭空消失。
+ * @param raw - 任意输入。
+ * @returns {Object} { greeting, signOff, contextBar }。
+ */
+function sanitizeSwitches(raw) {
+  var src = raw !== null && typeof raw === "object" ? raw : {};
+  return {
+    greeting: src.greeting !== false,
+    signOff: src.signOff !== false,
+    contextBar: src.contextBar !== false
+  };
+}
+
+/**
+ * 读一个总开关（页面各处判断"这个功能现在开没开"都走它，口径只有一处）。
+ * @param config - 配置对象（可能是 undefined / 半截的旧配置）。
+ * @param key - 开关名：greeting / signOff / contextBar。
+ * @returns {boolean} 开关状态；拿不准时一律 true。
+ */
+function switchOn(config, key) {
+  if (config === null || config === undefined || typeof config !== "object") return true;
+  return sanitizeSwitches(config.switches)[key] !== false;
+}
+
 function normalize(raw) {
   var base = raw !== null && typeof raw === "object" ? raw : {};
   return Object.assign({}, normalizeCore(base), { scenes: sanitizeScenes(base.scenes) });
@@ -1136,7 +1184,8 @@ function normalizeCore(raw) {
     onlyAssistant: base.onlyAssistant !== false,
     legacyLines: sanitizeLegacyLines(base.legacyLines),
     pool: sanitizePool(base.pool),
-    perWorkspace: sanitizeWorkspaceBindings(base.perWorkspace)
+    perWorkspace: sanitizeWorkspaceBindings(base.perWorkspace),
+    switches: sanitizeSwitches(base.switches)
   };
 }
 
@@ -1639,12 +1688,13 @@ function validate(draft) {
   return null;
 }
 
-/** 分区的默认展开状态：高频的三个打开，低频的收起（面板不至于太长）。 */
-var FOLD_DEFAULTS = { text: true, font: true, deco: true, scenes: false, alert: false, legacy: false, bar: false, diag: false };
+/** 分区的默认展开状态：高频的四个打开，低频的收起（面板不至于太长）。 */
+var FOLD_DEFAULTS = { master: true, text: true, font: true, deco: true, scenes: false, alert: false, legacy: false, bar: false, diag: false };
 var FOLD_KEY = "gs.signoff.folds";
 
 /** 顶部快速跳转条：顺序就是面板里的顺序（标签短一点，一行放得下）。 */
 var SECTION_NAV = [
+  { key: "master", label: "总开关" },
   { key: "text", label: "文案" },
   { key: "font", label: "字体" },
   { key: "deco", label: "外观" },
@@ -2419,6 +2469,50 @@ function Editor() {
     );
   }
 
+  /**
+   * 苹果（iOS）样式的滑动开关（v1.22.0）——「总开关」分区里的一格。
+   * 真身是 checkbox：键盘能 Tab 到、空格能切换、屏幕阅读器认得出（role=switch + aria-checked），
+   * 轨道与滑块是 CSS 画的两层 span，过渡动画也在 CSS 里（系统开了"减少动态效果"就不动）。
+   * @param {string} key 开关名（config.switches 里的字段）。
+   * @param {string} icon 标题前的小图标。
+   * @param {string} title 开关名。
+   * @param {string} onHint 打开时显示的说明。
+   * @param {string} offHint 关闭时显示的说明。
+   * @returns {Object} React 元素。
+   */
+  function masterSwitch(key, icon, title, onHint, offHint) {
+    var on = switchOn(draft, key);
+    return React.createElement("div", { className: on ? "gs-master-item" : "gs-master-item gs-master-off", key: key },
+      React.createElement("div", { className: "gs-master-head" },
+        React.createElement("span", { className: "gs-master-name" }, icon + " " + title),
+        React.createElement("label", {
+          className: dark === true ? "gs-switch gs-switch-dark" : "gs-switch",
+          title: (on ? "关掉" : "打开") + "「" + title + "」"
+        },
+          React.createElement("input", {
+            type: "checkbox", role: "switch",
+            checked: on, "aria-checked": on ? "true" : "false", "aria-label": title,
+            onChange: function (event) { patchSwitch(key, event.target.checked); }
+          }),
+          React.createElement("span", { className: "gs-switch-track" },
+            React.createElement("span", { className: "gs-switch-thumb" })
+          ),
+          React.createElement("span", { className: "gs-switch-state" }, on ? "开" : "关")
+        )
+      ),
+      React.createElement("div", { className: "gs-hint" }, on ? onHint : offHint)
+    );
+  }
+
+  /** 拨一个总开关：改完走与其它设置同一条自动保存（1.2 秒），下一次回复即生效。 */
+  function patchSwitch(key, value) {
+    var next = Object.assign({}, draft.switches);
+    next[key] = value === true;
+    var name = key === "greeting" ? "开场语" : (key === "signOff" ? "收尾语" : "上下文卡");
+    patchTop({ switches: next });
+    setNotice("总开关：「" + name + "」已" + (value === true ? "打开" : "关闭") + "，正在保存…");
+  }
+
   /** 下拉框：选项多的时候比一排按钮省地方。 */
   function selectCell(label, options, value, onChange, key, wide) {
     return cell(label, React.createElement("select", {
@@ -2608,8 +2702,11 @@ function Editor() {
       + " · 文案池 " + (poolNow.enabled === true ? "开启（" + poolCount + " 句）" : "未开启"));
     var hits = typeof document !== "undefined" ? document.querySelectorAll(".gs-chat-line").length : 0;
     add(stylerStats.runs > 0, "贴样式器：运行 " + stylerStats.runs + " 次 · 本页命中 " + hits + " 行（命中 0 说明当前这页还没有对得上的固定行）");
+    var dockOn = switchOn(cfg, "contextBar");
     var dock = typeof document !== "undefined" ? document.querySelector(".gs-dock-bar") : null;
-    add(dock !== null, "进度条：" + (dock !== null ? "已挂载（读数 " + (dock.getAttribute("aria-valuenow") || "未知") + "）" : "未挂载（输入框上方的卡片没出现）"));
+    add(dockOn ? dock !== null : true, "进度条：" + (dockOn
+      ? (dock !== null ? "已挂载（读数 " + (dock.getAttribute("aria-valuenow") || "未知") + "）" : "未挂载（输入框上方的卡片没出现）")
+      : "已按「总开关 → 上下文卡」关闭（在设置页「总开关」里拨回来即可）"));
     var signals = readDarkSignals();
     add(true, "深浅判定：" + (isDarkTheme() ? "深色" : "浅色")
       + "（body 标记 " + (signals.bodyDarkAttr ? "有" : "无")
@@ -2712,8 +2809,29 @@ function Editor() {
         React.createElement("div", { className: tab === "greeting" ? "gs-preview-line gs-preview-on" : "gs-preview-line" },
           lineRender(draft.greeting, "开场", "preview-greeting")),
         React.createElement("div", { className: tab === "signOff" ? "gs-preview-line gs-preview-on" : "gs-preview-line" },
-          lineRender(draft.signOff, "收尾", "preview-signoff"))
+          lineRender(draft.signOff, "收尾", "preview-signoff")),
+        // 总开关关掉的行在这儿直说一句：预览照旧显示样式，但它已经不会写进提示词了。
+        (switchOn(draft, "greeting") && switchOn(draft, "signOff")) ? null
+          : React.createElement("div", { className: "gs-hint", key: "switches-off" },
+              "总开关：" + (switchOn(draft, "greeting") ? "" : "开场语已关 · ") + (switchOn(draft, "signOff") ? "" : "收尾语已关 · ")
+              + "关掉的行不写进提示词（文案与样式都留着，随时能开回来）")
       )
+    ),
+    // 总开关（v1.22.0）：三个功能各一个开关，互不影响。放最顶上，进设置页第一眼就能拨。
+    section("总开关（三个功能各管各的 · 拨完自动保存）", "master",
+      React.createElement("div", { className: "gs-master" },
+        masterSwitch("contextBar", "🚦", "上下文卡",
+          "输入框上方那条进度条 / 六格读数 / 上下文构成 / 到线红底横幅 —— 全部照常显示。",
+          "整块都不出现（输入框上方干干净净）。纯页面显示，不影响模型，随时开回来。"),
+        masterSwitch("greeting", "👑", "开场语",
+          "每次回复的正文都要以开场语那一行开头。",
+          "提示词里不再要求开场那一行 —— 我回复时就不再写它了。文案与样式都留着。"),
+        masterSwitch("signOff", "🏁", "收尾语",
+          "每次回复的正文都要以收尾语那一行结尾。",
+          "提示词里不再要求收尾那一行 —— 我回复时就不再写它了。文案与样式都留着。")
+      ),
+      React.createElement("div", { className: "gs-hint" },
+        "三个开关各存各的：可以只关上下文卡、只关收尾、或三个全关；两个文字开关改的是「提示词里要不要这一行」，所以是**下一次回复**生效。")
     ),
     section("文本（会写进我回复的正文，可含表情）", "text",
       React.createElement("div", null,
@@ -6818,6 +6936,22 @@ var stylerStats = {
 };
 
 /**
+ * 上下文卡的门（v1.22.0）：「总开关 → 上下文卡」关掉时整块不挂载
+ * —— 进度条、六格读数、上下文构成、到线横幅、标签页标题提醒一起消失，输入框上方干干净净。
+ *
+ * 为什么另起一层组件，而不是在 GreetDock 里 `if (!on) return null`：
+ * React 要求同一次挂载里 hook 的调用数量与顺序始终一致，开关一拨就少跑一堆 hook 会直接报错；
+ * 用一个只跑 useConfig 的门组件把 GreetDock 整个挂上/卸下，既合法，开回来时状态也是干净的。
+ * @param props - 与 GreetDock 同样的宿主 props（原样透传）。
+ * @returns {Object|null} React 元素或 null。
+ */
+function GreetDockGate(props) {
+  var store = useConfig();
+  if (!switchOn(store.config, "contextBar")) return null;
+  return React.createElement(GreetDock, props === undefined ? null : props);
+}
+
+/**
  * 注册设置行、设置页与输入框上方的卡片。
  * 必须导出 inject：客户端插件的行可能在 slots 服务出现之前激活，
  * 老写法只做 ctx.get("slots") 判断并 return，会导致页面上什么都没注册。
@@ -6870,7 +7004,7 @@ function apply(ctx) {
     return slots.inject("conversation.input.dock", function () {
       return slots.register(
         { name: "conversation.input.dock", id: "greet-signoff-usage", order: 5 },
-        function (props) { return React.createElement(GreetDock, props === undefined ? null : props); }
+        function (props) { return React.createElement(GreetDockGate, props === undefined ? null : props); }
       );
     });
   }, "greet-signoff:usage-dock");
@@ -6983,6 +7117,9 @@ module.exports = {
     pathKey: pathKey,
     lineStyleSource: lineStyleSource,
     normalizeCore: normalizeCore,
+    // v1.22.0：三个总开关（开场语 / 收尾语 / 上下文卡）的清洗与读取口径
+    sanitizeSwitches: sanitizeSwitches,
+    switchOn: switchOn,
     runtimeVarRegex: runtimeVarRegex,
     findComposerEl: findComposerEl,
     readComposerText: readComposerText,

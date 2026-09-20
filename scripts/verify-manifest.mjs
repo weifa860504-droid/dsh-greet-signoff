@@ -98,7 +98,9 @@ function checkPatch() {
  * 选项；实测长尾表（40 种动效 + 32 个小车图标 + 37 套配色 + 形状/填充/阴影 + 风格预设）全部
  * 加起来只占 client.js 的 5.9%，所以门禁继续只用来防"长尾膨胀"这一件事。
  * v1.20.0：380KB → 400KB。这一版只加了"宿主节奏 × 本页采样"的合成逻辑与来源文案
- * （pickPace / paceSourceText / rateFromJumps 重写），实测 370.9KB。 */
+ * （pickPace / paceSourceText / rateFromJumps 重写），实测 370.9KB。
+ * v1.22.0：维持 400KB 阈值（实测 380.5KB）。这一版只加了三个总开关的 UI 与门组件
+ * （苹果滑动开关 CSS + masterSwitch + GreetDockGate），没有新增长尾表。 */
 function reportSizes() {
   for (const file of ['client.js', 'index.mjs']) {
     const size = statSync(join(ROOT, file)).size

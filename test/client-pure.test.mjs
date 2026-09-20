@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault', 'moreOptionLabel', 'moreOption', 'isMoreOptionValue', 'occupancyTip', 'pickPace', 'paceSourceText', 'paceLocalAvg']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault', 'moreOptionLabel', 'moreOption', 'isMoreOptionValue', 'occupancyTip', 'pickPace', 'paceSourceText', 'paceLocalAvg', 'sanitizeSwitches', 'switchOn']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -1037,4 +1037,47 @@ test('v1.20.0 源码契约：速率 / 每轮涨量 / 上一轮涨幅都从 pickP
     assert.ok(SOURCE.includes(needle), `缺 ${needle}`)
   }
   assert.ok(!SOURCE.includes('rateFromTurnJumps'), '旧的"只认最后两次跃升"开关应删掉')
+})
+
+/* ── v1.22.0：三个总开关（开场语 / 收尾语 / 上下文卡） ───────────────── */
+
+test('v1.22.0 总开关清洗：只认明确 false，缺字段 / 坏值一律当开', () => {
+  assert.deepEqual(t.sanitizeSwitches(undefined), { greeting: true, signOff: true, contextBar: true })
+  assert.deepEqual(t.sanitizeSwitches(null), { greeting: true, signOff: true, contextBar: true })
+  assert.deepEqual(t.sanitizeSwitches({ greeting: false }), { greeting: false, signOff: true, contextBar: true })
+  assert.deepEqual(t.sanitizeSwitches('nope'), { greeting: true, signOff: true, contextBar: true })
+  // 字符串 / 0 / null 都不算"关" —— 手改坏配置时宁可照旧工作，也不要整块功能消失
+  assert.equal(t.sanitizeSwitches({ signOff: 'no' }).signOff, true)
+  assert.equal(t.sanitizeSwitches({ contextBar: 0 }).contextBar, true)
+  // normalize 一路带着它：旧宿主半回传的配置里没有这个字段时补成"全开"
+  assert.deepEqual(t.normalize({}).switches, { greeting: true, signOff: true, contextBar: true })
+  assert.equal(t.normalize({ switches: { contextBar: false } }).switches.contextBar, false)
+})
+
+test('v1.22.0 switchOn：读一个开关，拿不准就当开，三个各管各的', () => {
+  assert.equal(t.switchOn(undefined, 'greeting'), true)
+  assert.equal(t.switchOn(null, 'contextBar'), true)
+  assert.equal(t.switchOn({}, 'greeting'), true)
+  assert.equal(t.switchOn({ switches: null }, 'contextBar'), true)
+  assert.equal(t.switchOn({ switches: { greeting: false } }, 'greeting'), false)
+  assert.equal(t.switchOn({ switches: { greeting: false } }, 'signOff'), true, '三个开关互不影响')
+})
+
+test('v1.22.0 源码契约：总开关区在最顶上 + 苹果滑动开关 + 上下文卡走门组件', () => {
+  // 三个开关都在，且都挂在「总开关」分区里
+  assert.ok(SOURCE.includes('gs-master'), '缺总开关分区的容器/样式')
+  assert.ok(SOURCE.includes('masterSwitch("contextBar"'), '缺「上下文卡」开关')
+  assert.ok(SOURCE.includes('masterSwitch("greeting"'), '缺「开场语」开关')
+  assert.ok(SOURCE.includes('masterSwitch("signOff"'), '缺「收尾语」开关')
+  // 苹果开关的真身是 checkbox + role=switch（键盘 Tab / 空格能用，屏幕阅读器认得出）
+  assert.ok(SOURCE.includes('role: "switch"'), '缺 role="switch"')
+  assert.ok(SOURCE.includes('"aria-checked"'), '缺 aria-checked')
+  assert.ok(SOURCE.includes('.gs-switch-track{'), '缺轨道样式')
+  assert.ok(SOURCE.includes('.gs-switch-thumb{'), '缺滑块样式')
+  assert.ok(SOURCE.includes('translateX(20px)'), '缺滑块位移（iOS 51×31 / 滑块 27 / 位移 20）')
+  assert.ok(SOURCE.includes('cubic-bezier(.4,0,.2,1)'), '缺滑动过渡动画')
+  // 上下文卡：开关一拨就整块挂上/卸下（不能靠 GreetDock 里 early return，会踩 hook 数量）
+  assert.ok(SOURCE.includes('GreetDockGate'), '上下文卡应通过门组件挂载')
+  assert.ok(/SECTION_NAV = \[\s*\{ key: "master"/.test(SOURCE), '跳转条里「总开关」应在第一个')
+  assert.ok(SOURCE.includes('switchOn(cfg, "contextBar")'), '诊断区要认得"被开关关掉"这种状态')
 })

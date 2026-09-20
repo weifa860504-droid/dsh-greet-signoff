@@ -31,7 +31,7 @@
 11. **动态变量与自检**：固定行里可用 `{date}` `{weekday}` `{daypart}` `{time}` `{model}` `{count}` `{elapsed}` `{tokens}`，由服务端每轮填真实值；设置页「诊断 → 跑一遍自检」把配置、文案、贴样式、进度条、连接自愈、两侧版本一次问到底。
 12. **连接自愈**：`dsh web` 重启会换令牌，已打开的页面会卡在"自动重连中"。本插件带看门狗：连续 30 秒连接异常、服务端可达（`/` 仍 200）、且输入框没有草稿时自动重载一次；服务真挂了不动作，本标签页每小时最多 3 次、间隔 ≥60 秒。
 
-配置存在 `$DSH_HOME/greet-signoff.json`（Windows 默认 `C:\Users\<你>\.dsh\greet-signoff.json`），**改完保存下一轮回复即生效，不需要重启**。
+配置默认存在**插件目录里的** `config/greet-signoff.json`（本机即 `E:\dsh-greet-signoff\dsh-greet-signoff\config\greet-signoff.json`）——插件搬到哪、配置就跟到哪。想放别处就设环境变量 `DSH_GREET_SIGNOFF_HOME`（支持相对路径，按插件目录解析）；插件目录里还没有配置、而旧的 `$DSH_HOME/greet-signoff.json` 存在时，会继续用旧位置。**改完保存下一轮回复即生效，不需要重启**。
 
 ## 为什么需要它
 
@@ -129,8 +129,24 @@ dsh plugin --profile web add <本地包目录的绝对路径>
 | `matchMode` | 固定行匹配方式：`exact` 逐字相同 / `loose` 宽松（忽略大小写、空白、全半角与首尾标点）/ `fuzzy` 近似容错 | `loose` |
 | `onlyAssistant` | 只给助手的回复贴样式；`false` 时整段对话都贴 | true |
 | `legacyLines` | 旧文案兼容表：`[{ text, style: "greeting" \| "signOff" }]`，最多 30 条，**只影响页面渲染，不写进提示词** | `[]` |
+| `switches` | 三个独立总开关：`{ greeting, signOff, contextBar }`（见下一节） | 三个都开 |
 
 > 旧版本里的布尔字段 `looseMatch` 仍可读（`false` 等价于 `matchMode: "exact"`）。
+
+### 三个总开关（v1.22.0）
+
+设置页最顶上是一排**苹果（iOS）样式的滑动开关**，三个功能各管各的：
+
+| 开关 | 关掉之后 |
+| --- | --- |
+| 🚦 上下文卡 | 输入框上方那整块都不出现：进度条、六格读数、上下文构成明细、到线红底横幅、标签页标题的 🚨 前缀一起消失。纯页面显示，**不影响模型**，随时开回来。 |
+| 👑 开场语 | 提示段里不再要求「每次回复以开场语开头」——模型之后就不写这一行了。文案与样式都留着。 |
+| 🏁 收尾语 | 同上，改的是「结尾那一行」。 |
+
+- 两个文字开关改的是**写进系统提示的那段规则**，所以是**下一次回复**生效（不用重启 DSH：宿主半每轮组装提示时都会重读配置）。
+- 上下文卡开关是页面侧的：拨完自动保存（1.2 秒），进度条立刻整块挂上或卸下。
+- 配置里只认**明确写成 `false`** 为「关」；缺字段、写成字符串、写成 `0` 一律当「开」——手改坏配置也不会让整块功能凭空消失。
+- 三个都关也不会报错：提示段整段不渲染，页面只留下干净的输入框。
 
 ### 固定行是怎么被认出来的
 
@@ -230,7 +246,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```
 
 接口只在 DSH 自己监听的地址上提供，**不额外开端口、不对外发包**；配置与图片资产都落在本机
-（`$DSH_HOME/greet-signoff.json` 与 `$DSH_HOME/greet-signoff-assets/`）。唯一的写操作是 POST `/handoff`（写摘要文件）。
+（`<插件目录>/config/greet-signoff.json` 与 `<插件目录>/config/greet-signoff-assets/`，详见上文「配置在哪」）。唯一的写操作是 POST `/handoff`（写摘要文件）。
 这也意味着：能在这台机器上跑的程序（包括其它本地脚本）可以读写这份配置——这是 DSH 本机免认证的既有设计，请按"本机自用"来理解它。
 
 ## 已知限制
@@ -249,7 +265,7 @@ curl -X POST -H "Content-Type: application/json" \
   浏览器半（`client.js`）的改动刷新页面即可；宿主半（`index.mjs`，含 `/session`、`/context`、`/cost`、`/handoff`）必须重启。
 - **深浅判定是启发式**：四条证据都不成立时（皮肤既不声明 `color-scheme`、底色又是透明或图片）会判成浅色。
   设置页「诊断 → 健康自检」里能看到四条证据的实测值，配色不对时先看那一行。
-- **单份配置**：所有 profile/会话共用 `$DSH_HOME/greet-signoff.json`；进度条外观偏好与预算档（本会话临时档）按浏览器本地保存。
+- **单份配置**：所有 profile/会话共用同一份 `<插件目录>/config/greet-signoff.json`；进度条外观偏好与预算档（本会话临时档）按浏览器本地保存。
 - **多标签页**：配置在打开页面时读一次，切回标签页/重新聚焦时补读；时长记账有互斥锁，只有一个标签页在计时。
 - **平台**：浏览器半仅在 Web 端注册 UI；宿主半（提示段与配置接口）不依赖平台。
 - **它会改写输入区上方的一处布局**：导航条挂在 `conversation.input.dock`，宿主会给该插槽的直接子元素套"附属卡片"样式（白底/圆角/阴影）。本插件已把自身容器设为透明、把对齐缩进放到内层元素，避免多余白框；若宿主再改这条样式，可能又出现视觉偏差。
@@ -278,7 +294,7 @@ dsh plugin --profile web remove <包名>  # 卸载（装完同样重启 web）
 当前版本 **1.20.0**。版本历史见 [CHANGELOG.md](CHANGELOG.md)。开发/发版前的自检：
 
 ```sh
-node --test test/                      # 87 项纯函数与数据解析单测（把 client.js / index.mjs 用最小桩加载进 Node）
+node --test test/                      # 93 项纯函数与数据解析单测（把 client.js / index.mjs 用最小桩加载进 Node）
 node scripts/verify-manifest.mjs       # 元数据、发布物清单、占位符、体积阈值、CHANGELOG 版本一致性
 npm pack --dry-run                     # 预览真正会被打包的文件
 ```
