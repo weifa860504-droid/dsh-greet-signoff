@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.19.0'
+const HOST_VERSION = '1.20.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -130,6 +130,14 @@ const HOT_TEXT_MAX = 60
 const TOP_MAX = 5
 /** 扫描全部会话投影算 top 的缓存时长（毫秒）——避免每次请求都把 50 个文件读一遍。 */
 const TOP_CACHE_MS = 60000
+/** 速率统计的观察窗口（毫秒）：只看最近 45 分钟的请求记录，更早的曲线不代表"现在的速度"。 */
+const PACE_WINDOW_MS = 45 * 60 * 1000
+/** 速率至少要覆盖的时间跨度（毫秒）：不足就不给数字（避免把"同一秒内的几步"当成速度）。 */
+const PACE_MIN_SPAN_MS = 20000
+/** 每轮涨量参与均值计算的最近轮数上限。 */
+const PACE_TURN_KEEP = 12
+/** 单轮涨量给的"这是几万 tok"的展示上限（超过就写实际值，只用来挡住脏数据）。 */
+const PACE_RISE_MAX = 5000000
 /** 会话 id 允许的形状（同时也是路径穿越防线：只允许字母数字与 . _ -）。 */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 /** 交接摘要正文的字节上限。 */
@@ -907,6 +915,154 @@ function byTokensDesc(a, b) {
 }
 
 /**
+ * 空的节奏读数（数据拿不到时也保证字段齐全，前端不用做存在性判断）。
+ * @param {number} windowMs 观察窗口。
+ * @returns {object} 全空读数。
+ */
+function emptyPace(windowMs) {
+  return {
+    source: 'none',
+    windowMs: typeof windowMs === 'number' && windowMs > 0 ? windowMs : PACE_WINDOW_MS,
+    requestCount: 0,
+    turnCount: 0,
+    lastRequestAt: null,
+    idleMs: null,
+    ratePerMinute: null,
+    rateFrom: null,
+    rateSamples: 0,
+    rateSpanMs: 0,
+    avgPerTurn: null,
+    lastRise: null,
+    rises: [],
+    msPerTurn: null,
+    lastTurnSteps: 0,
+  }
+}
+
+/**
+ * 从投影的 `requests[]` 里算"节奏"：实测速率（token/分钟）与按轮统计的每轮涨量。
+ *
+ * 为什么要放宿主半算（v1.20.0）：浏览器半只能在"本页亲眼看过的读数变化"上采样 ——
+ * 切会话 / 刷新页面后账本从空开始，于是「实测速率」和「到线还有几轮」刚打开会话时必然是空的；
+ * 而且它只能按 5 秒刻度看占用跳变，一个刻度里塞进好几步时相邻跃升只差几十毫秒，
+ * "最近两次跃升"的跨度永远不达标（实测 56~88ms），兜底恒为 null。
+ * 投影文件里 `requests[]` 每条是 {time, turn, step, prompt, …}，prompt 就是那次请求真正喂进去的
+ * token 数，天然带**轮次**与**时刻**——所以：
+ *   · 速率 = 观察窗口内首末两条的 (prompt 差 / 时间差)，跨度不足 20 秒就不给数；
+ *   · 每轮涨量 = 相邻两轮**轮末** prompt 之差（轮内 prompt 会因为工具结果被裁而下降，
+ *     所以只取每轮的最后一个点，绝不用轮内涨量去均值 —— 那正是旧版"每轮涨量偏小"的根因）。
+ * 全程 fail-safe：结构不认识、字段脏、时间倒挂都只让对应字段为空，绝不抛。
+ *
+ * @param {unknown} timeline `contextTimeline.val`。
+ * @param {number} [now] 当前时间戳（缺省 Date.now()）。
+ * @param {number} [windowMs] 观察窗口（缺省 45 分钟）。
+ * @returns {object} 节奏读数。
+ */
+function parsePace(timeline, now, windowMs) {
+  const at = typeof now === 'number' && Number.isFinite(now) && now > 0 ? now : Date.now()
+  const span = typeof windowMs === 'number' && Number.isFinite(windowMs) && windowMs > 0 ? windowMs : PACE_WINDOW_MS
+  const out = emptyPace(span)
+  if (timeline === null || timeline === undefined || typeof timeline !== 'object') return out
+  const raw = Array.isArray(timeline.requests) ? timeline.requests : []
+  if (raw.length === 0) return out
+
+  // 有效请求点：时刻与 prompt 都得是有限正数。排序一次，后面所有计算都基于它。
+  const points = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue
+    const time = numOr0(item.time)
+    const prompt = numOr0(item.prompt)
+    const turn = numOr0(item.turn)
+    if (time <= 0 || prompt <= 0) continue
+    points.push({ time, prompt, turn })
+  }
+  if (points.length === 0) return out
+  points.sort((a, b) => a.time - b.time)
+
+  out.source = 'projcache'
+  out.requestCount = points.length
+  out.lastRequestAt = points[points.length - 1].time
+  out.idleMs = Math.max(0, at - out.lastRequestAt)
+
+  // ── 速率：观察窗口内的首末两点 ───────────────────────────────────────────
+  const windowStart = at - span
+  const inWindow = points.filter((point) => point.time >= windowStart)
+  let ratePair = null
+  let rateFrom = null
+  if (inWindow.length >= 2) {
+    ratePair = [inWindow[0], inWindow[inWindow.length - 1]]
+    rateFrom = 'window'
+  } else if (points.length >= 2) {
+    // 窗口内点太少（长时间没聊、或这条会话今天就两条）→ 退回用最后两条记录，尽量给个数。
+    ratePair = [points[points.length - 2], points[points.length - 1]]
+    rateFrom = 'tail'
+  }
+  out.rateSamples = inWindow.length
+  if (ratePair !== null) {
+    const gap = ratePair[1].time - ratePair[0].time
+    const delta = ratePair[1].prompt - ratePair[0].prompt
+    out.rateSpanMs = Math.max(0, gap)
+    if (gap >= PACE_MIN_SPAN_MS && delta > 0) {
+      out.ratePerMinute = delta / (gap / 60000)
+      out.rateFrom = rateFrom
+    }
+  }
+
+  // ── 按轮：每轮只取"轮末"那一个点 ─────────────────────────────────────────
+  // 同时记下这一轮的**峰值**：饱和会话里 DSH 会裁剪工具结果，轮末 prompt 可能比轮首还低
+  // （实测 796967 → 785012），这时"轮末之差"会是负数，退回"轮内峰值相对上一轮末的涨幅"更有意义。
+  const ends = []
+  let current = null
+  for (const point of points) {
+    if (current === null || point.turn !== current.turn) {
+      if (current !== null) ends.push(current)
+      current = { turn: point.turn, time: point.time, prompt: point.prompt, peak: point.prompt, steps: 1 }
+      continue
+    }
+    current.time = point.time
+    current.prompt = point.prompt
+    current.steps += 1
+    if (point.prompt > current.peak) current.peak = point.prompt
+  }
+  if (current !== null) ends.push(current)
+  out.turnCount = ends.length
+  out.lastTurnSteps = ends.length > 0 ? ends[ends.length - 1].steps : 0
+
+  // 每轮涨量：相邻轮末之差。负数（上下文被压缩/裁剪）不算涨量，直接跳过。
+  const rises = []
+  for (let i = 1; i < ends.length; i += 1) {
+    const delta = ends[i].prompt - ends[i - 1].prompt
+    if (delta > 0 && delta <= PACE_RISE_MAX) rises.push(delta)
+  }
+  out.rises = rises.slice(-PACE_TURN_KEEP)
+  if (rises.length > 0) {
+    const window = rises.slice(-PACE_TURN_KEEP)
+    out.avgPerTurn = Math.round(window.reduce((sum, value) => sum + value, 0) / window.length)
+  }
+  if (ends.length >= 2) {
+    const prev = ends[ends.length - 2].prompt
+    const last = ends[ends.length - 1]
+    const net = last.prompt - prev
+    const fallback = last.peak - prev
+    const rise = net > 0 ? net : fallback
+    out.lastRise = rise > 0 && rise <= PACE_RISE_MAX ? rise : null
+  }
+
+  // 每轮耗时：轮末时刻的间隔均值（只认 0~6 小时的间隔，跨天的断档不算）。
+  const gaps = []
+  for (let i = 1; i < ends.length; i += 1) {
+    const gap = ends[i].time - ends[i - 1].time
+    if (gap > 0 && gap < 6 * 3600000) gaps.push(gap)
+  }
+  if (gaps.length > 0) {
+    const window = gaps.slice(-PACE_TURN_KEEP)
+    out.msPerTurn = Math.round(window.reduce((sum, value) => sum + value, 0) / window.length)
+  }
+
+  return out
+}
+
+/**
  * 解析会话投影里的上下文占用明细。
  *
  * 真实结构（2026-09-20 实查，50 个投影文件统计过）：
@@ -920,10 +1076,12 @@ function byTokensDesc(a, b) {
  * @param {unknown} doc 解析后的投影 JSON（读不到时传 null）。
  * @param {string|undefined} sessionId 会话 id。
  * @param {string} [reason] 取不到数据时的原因，写进 note。
+ * @param {number} [now] 当前时间戳（算"节奏"用；缺省 Date.now()）。
  * @returns {object} 响应体（不含 ok）。
  */
-function parseContextTimeline(doc, sessionId, reason) {
+function parseContextTimeline(doc, sessionId, reason, now) {
   const id = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null
+  const at = typeof now === 'number' && Number.isFinite(now) && now > 0 ? now : Date.now()
   const empty = {
     sessionId: id,
     source: 'none',
@@ -939,6 +1097,7 @@ function parseContextTimeline(doc, sessionId, reason) {
     provider: '',
     requestCount: 0,
     lastRequestTotal: 0,
+    pace: emptyPace(),
     note: typeof reason === 'string' && reason.length > 0 ? reason : '拿不到该会话的上下文明细',
   }
   if (doc === null || doc === undefined || typeof doc !== 'object') return empty
@@ -947,6 +1106,7 @@ function parseContextTimeline(doc, sessionId, reason) {
   const timeline = rowVal(rows.contextTimeline)
   const pressure = rowVal(rows.contextPressure)
   const surface = Array.isArray(timeline.surface) ? timeline.surface : []
+  const pace = parsePace(timeline, at)
 
   const buckets = new Map()
   bumpPart(buckets, 'system', timeline.systemTokens)
@@ -957,7 +1117,7 @@ function parseContextTimeline(doc, sessionId, reason) {
     bumpPart(buckets, cat, item.tokens)
   }
   if (buckets.size === 0) {
-    return Object.assign({}, empty, { note: '投影文件里没有上下文明细（会话可能刚建立，或这一版 DSH 改了结构）' })
+    return Object.assign({}, empty, { note: '投影文件里没有上下文明细（会话可能刚建立，或这一版 DSH 改了结构）', pace })
   }
 
   const sorted = [...buckets.values()].sort(byTokensDesc)
@@ -1043,6 +1203,7 @@ function parseContextTimeline(doc, sessionId, reason) {
     provider: typeof timeline.provider === 'string' ? timeline.provider : '',
     requestCount: requests.length,
     lastRequestTotal,
+    pace,
     note: '',
   }
 }
@@ -1468,18 +1629,19 @@ function scanSessionCosts() {
  */
 function contextBody(wanted) {
   const info = resolveSessionInfo(wanted)
+  const at = Date.now()
   if (typeof info.id !== 'string' || info.id.length === 0) {
-    return parseContextTimeline(null, null, '没有会话 id：地址加 ?sessionId=<id>，或先在本会话里发一条消息')
+    return parseContextTimeline(null, null, '没有会话 id：地址加 ?sessionId=<id>，或先在本会话里发一条消息', at)
   }
   const file = projcachePathFor(info.id)
   if (file === null) {
-    return parseContextTimeline(null, info.id, `没有找到该会话的投影文件（${PROJCACHE_DIR}）`)
+    return parseContextTimeline(null, info.id, `没有找到该会话的投影文件（${PROJCACHE_DIR}）`, at)
   }
   const doc = readJsonFile(file)
   if (doc === null) {
-    return parseContextTimeline(null, info.id, `投影文件读不出来或不是合法 JSON：${file}`)
+    return parseContextTimeline(null, info.id, `投影文件读不出来或不是合法 JSON：${file}`, at)
   }
-  return parseContextTimeline(doc, info.id, '')
+  return parseContextTimeline(doc, info.id, '', at)
 }
 
 /**
@@ -1846,6 +2008,8 @@ export const __test = {
   ruleTextWith,
   // 诊断类接口（上下文 / 花费 / 交接）的纯逻辑
   parseContextTimeline,
+  parsePace,
+  emptyPace,
   parseSessionCost,
   rankSessionCosts,
   aggregateLedger,

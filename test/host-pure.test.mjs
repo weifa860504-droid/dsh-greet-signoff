@@ -661,3 +661,124 @@ test('宿主半：validateHandoffText —— 非空 + 200000 字节上限', () =
   assert.equal(h.validateHandoffText('abc', 3).ok, true)
   assert.match(h.validateHandoffText('a'.repeat(10), 5).error, /太大/)
 })
+
+// ── v1.20.0：宿主半算"节奏"（实测速率 + 按轮涨量）────────────────────────────
+// 背景：这两格以前只能靠浏览器半"本页亲眼看过的读数变化"，切会话/刷新后账本从空开始，
+// 且相邻跃升常常只差几十毫秒（跨度恒不达标）→ 刚打开会话时必然是空的。
+// 现在改成读会话投影的 requests[]（每条带 turn/time/prompt），所以这些测试锁的就是
+// "窗口口径的速率"与"轮末之差算每轮涨量"这两条规则。
+
+test('宿主半：parsePace —— 速率按窗口首末点、每轮涨量按轮末之差', () => {
+  const t0 = 1700000000000
+  const timeline = {
+    requests: [
+      { time: t0, turn: 1, step: 1, prompt: 100000 },
+      { time: t0 + 30000, turn: 1, step: 2, prompt: 120000 },
+      { time: t0 + 120000, turn: 2, step: 1, prompt: 150000 },
+      { time: t0 + 180000, turn: 2, step: 2, prompt: 200000 },
+      // 第 3 轮开头降了（上下文被裁），轮末才涨回去 —— 只取轮末才不会算出负增长
+      { time: t0 + 240000, turn: 3, step: 1, prompt: 190000 },
+      { time: t0 + 300000, turn: 3, step: 2, prompt: 230000 },
+    ],
+  }
+  const now = t0 + 300000
+  const pace = h.parsePace(timeline, now)
+  assert.equal(pace.source, 'projcache')
+  assert.equal(pace.requestCount, 6)
+  assert.equal(pace.turnCount, 3)
+  assert.equal(pace.lastRequestAt, now)
+  assert.equal(pace.idleMs, 0)
+  // 速率：(230000 − 100000) / 5 分钟 = 26000 tok/分
+  assert.equal(pace.rateFrom, 'window')
+  assert.equal(pace.rateSpanMs, 300000)
+  assert.equal(pace.rateSamples, 6)
+  assert.equal(Math.round(pace.ratePerMinute), 26000)
+  // 每轮涨量：轮末 120000 → 200000 → 230000
+  assert.deepEqual(pace.rises, [80000, 30000])
+  assert.equal(pace.avgPerTurn, 55000)
+  assert.equal(pace.lastRise, 30000)
+  // 每轮耗时：150000 与 120000 的均值
+  assert.equal(pace.msPerTurn, 135000)
+  // 最后一轮的步数（这一轮走了 2 步）
+  assert.equal(pace.lastTurnSteps, 2)
+})
+
+test('宿主半：parsePace —— 脏数据 / 跨度不足 / 读数下降都不编数字', () => {
+  assert.equal(h.parsePace(null, 1).source, 'none')
+  assert.equal(h.parsePace({}, 1).source, 'none')
+  assert.equal(h.parsePace({ requests: 'x' }, 1).source, 'none')
+  assert.equal(h.parsePace({ requests: [null, 7, { time: 0, prompt: 0 }] }, 1).source, 'none')
+  assert.equal(h.emptyPace().ratePerMinute, null)
+  assert.equal(h.emptyPace().source, 'none')
+
+  const t0 = 1700000000000
+  // 两条只差 3 秒（同一次请求簇）→ 跨度不足 20 秒，不给速率
+  const tight = h.parsePace({
+    requests: [{ time: t0, turn: 1, prompt: 1000 }, { time: t0 + 3000, turn: 1, prompt: 9000 }],
+  }, t0 + 3000)
+  assert.equal(tight.ratePerMinute, null)
+  assert.equal(tight.rateSpanMs, 3000)
+
+  // 读数下降（工具结果被裁 / 压缩）不算涨量，也不给速率
+  const down = h.parsePace({
+    requests: [{ time: t0, turn: 1, prompt: 90000 }, { time: t0 + 60000, turn: 2, prompt: 50000 }],
+  }, t0 + 60000)
+  assert.equal(down.ratePerMinute, null)
+  assert.deepEqual(down.rises, [])
+  assert.equal(down.avgPerTurn, null)
+  assert.equal(down.lastRise, null)
+  // 时间倒挂：按 time 升序重排，不能把"后写的"当最后一条
+  const reversed = h.parsePace({
+    requests: [{ time: t0 + 60000, turn: 2, prompt: 40000 }, { time: t0, turn: 1, prompt: 10000 }],
+  }, t0 + 60000)
+  assert.equal(reversed.lastRequestAt, t0 + 60000)
+  assert.equal(Math.round(reversed.ratePerMinute), 30000)
+})
+
+test('宿主半：parsePace —— 45 分钟窗内不足两条时退回最后两条并标注来源', () => {
+  const t0 = 1700000000000
+  const stale = {
+    requests: [
+      { time: t0, turn: 1, prompt: 10000 },
+      { time: t0 + 60000, turn: 2, prompt: 40000 },
+    ],
+  }
+  const now = t0 + 3 * 3600 * 1000
+  const pace = h.parsePace(stale, now)
+  assert.equal(pace.rateFrom, 'tail')
+  assert.equal(pace.rateSamples, 0)
+  assert.equal(Math.round(pace.ratePerMinute), 30000)
+  assert.equal(pace.idleMs, 3 * 3600 * 1000 - 60000)
+  // 关掉窗口（窗口极小）时同样走 tail 分支，行为一致
+  assert.equal(h.parsePace(stale, now, 1000).rateFrom, 'tail')
+})
+
+test('宿主半：parsePace —— 轮末被裁剪时用轮内峰值兜底算"上一轮涨量"', () => {
+  const t0 = 1700000000000
+  // 第 2 轮涨到 260000 又被裁回 150000（工具结果被丢），轮末之差是 −50000
+  const pace = h.parsePace({
+    requests: [
+      { time: t0, turn: 1, step: 1, prompt: 200000 },
+      { time: t0 + 60000, turn: 2, step: 1, prompt: 260000 },
+      { time: t0 + 90000, turn: 2, step: 2, prompt: 150000 },
+    ],
+  }, t0 + 90000)
+  assert.equal(pace.turnCount, 2)
+  assert.equal(pace.lastTurnSteps, 2)
+  // 轮末净增是负的 → 退回"轮内峰值 260000 − 上一轮末 200000 = 60000"
+  assert.equal(pace.lastRise, 60000)
+  // 但"每轮涨量均值"只认真实净增，这里一条正涨量都没有
+  assert.deepEqual(pace.rises, [])
+  assert.equal(pace.avgPerTurn, null)
+})
+
+test('宿主半：parseContextTimeline 带出 pace 字段（老投影没有请求记录时是空读数）', () => {
+  const out = h.parseContextTimeline(projcacheDoc(), 'abc', '', 1700000000000)
+  assert.equal(out.pace.source, 'none')
+  assert.equal(out.pace.ratePerMinute, null)
+  assert.equal(out.pace.avgPerTurn, null)
+  const missing = h.parseContextTimeline(null, 'abc', '缺失')
+  assert.equal(missing.pace.source, 'none')
+  assert.equal(missing.pace.requestCount, 0)
+  assert.equal(missing.pace.lastRequestAt, null)
+})

@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault', 'moreOptionLabel', 'moreOption', 'isMoreOptionValue', 'occupancyTip']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault', 'moreOptionLabel', 'moreOption', 'isMoreOptionValue', 'occupancyTip', 'pickPace', 'paceSourceText', 'paceLocalAvg']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -949,4 +949,92 @@ test('v1.19.0 源码契约：涨幅读数 / 交接落盘 / 多标签锁 / 数据
   }
   assert.ok(SOURCE.includes('normalizePricing(uiState.pricing)'), 'fetchCostInfo 必须用设置里的单价')
   assert.ok(SOURCE.includes('priceDefault: PRICE_DEFAULT'), '__test 必须暴露内置单价')
+})
+
+// ── v1.20.0：宿主节奏 × 本页采样的合成（速率 / 每轮涨量 / 上一轮涨幅）──────────
+
+test('v1.20.0 pickPace：宿主优先，宿主给不了才退回本页采样与跃升', () => {
+  const base = 1700000000000
+  // ① 宿主全给 → 三格全部用宿主的数，并标出来源
+  const host = {
+    ratePerMinute: 26000, rateFrom: 'window', avgPerTurn: 55000, rises: [80000, 30000],
+    lastRise: 30000, msPerTurn: 135000, idleMs: 5000
+  }
+  const a = t.pickPace(host, [], [], [], 20000)
+  assert.equal(a.ratePerMinute, 26000)
+  assert.equal(a.rateSource, 'host')
+  assert.equal(a.rateFrom, 'window')
+  assert.equal(a.avgPerTurn, 55000)
+  assert.equal(a.avgSource, 'host')
+  assert.equal(a.turnsSeen, 2)
+  assert.equal(a.lastRise, 30000)
+  assert.equal(a.msPerTurn, 135000)
+  assert.equal(a.idleMs, 5000)
+  assert.equal(a.hostTurnCount, null, '宿主没给 turnCount 时是 null（不是 0）')
+  assert.equal(a.lastTurnSteps, 0)
+
+  // ② 宿主没给（老版本宿主 / 投影缺失）→ 退回本页 45 分钟采样
+  const samples = [{ t: base, used: 1000 }, { t: base + 40000, used: 5000 }]
+  const b = t.pickPace(null, samples, [base, base + 30000], [2500, 3000], t.rateMinSpanMs)
+  assert.equal(b.ratePerMinute, 6000)
+  assert.equal(b.rateSource, 'samples')
+  assert.equal(b.avgPerTurn, 2750)
+  assert.equal(b.avgSource, 'local')
+  assert.equal(b.turnsSeen, 2)
+  assert.equal(b.lastRise, 3000)
+  assert.equal(b.msPerTurn, null)
+
+  // ③ 宿主只给了轮次均值（窗口内不足两条）→ 速率用本页、轮次用宿主，来源各自标清
+  const c = t.pickPace({ ratePerMinute: null, avgPerTurn: 41000, rises: [41000], lastRise: null, turnCount: 3, lastTurnSteps: 5 },
+    samples, [base], [0], t.rateMinSpanMs)
+  assert.equal(c.rateSource, 'samples')
+  assert.equal(c.avgSource, 'host')
+  assert.equal(c.avgPerTurn, 41000)
+  assert.equal(c.turnsSeen, 1)
+  assert.equal(c.lastRise, null, '宿主 lastRise 为空时不该凭空造一个')
+  assert.equal(c.hostTurnCount, 3)
+  assert.equal(c.lastTurnSteps, 5)
+
+  // ④ 脏输入不炸：字符串 / NaN / 负数 / 缺参数一律当"没有"
+  const d = t.pickPace('x', 'y', null, null, 20000)
+  assert.equal(d.ratePerMinute, null)
+  assert.equal(d.avgPerTurn, null)
+  assert.equal(d.lastRise, null)
+  assert.equal(d.idleMs, null)
+  assert.equal(t.pickPace({ ratePerMinute: -5, avgPerTurn: Number.NaN }).ratePerMinute, null)
+  assert.equal(t.paceLocalAvg([0, -3, Number.NaN]), null)
+})
+
+test('v1.20.0 rateFromJumps：从最后一次跃升往前找跨度够的点', () => {
+  const base = 1700000000000
+  // 实测踩到的情形：相邻两次跃升只差 80ms —— 旧实现恒为 null；新实现会拿"跨度够的最近那次"
+  // 作起点：30000 − 80 = 29920ms，区间里只有最后一次跃升的 4000 → 8021 tok/分。
+  assert.equal(Math.round(t.rateFromJumps([base, base + 80, base + 30000], [2000, 3000, 4000])), 8021)
+  // 明确跳过"太近的起点"：base+15000 离最后一次只有 5 秒，不能当起点 → 用 base
+  // 跨度 20000ms、增量 = 3000 + 4000 = 7000 → 21000 tok/分
+  assert.equal(Math.round(t.rateFromJumps([base, base + 15000, base + 20000], [2000, 3000, 4000])), 21000)
+  // 全都挤在一秒内 → 仍然是 null（宁可显示 "—"，不给假数字）
+  assert.equal(t.rateFromJumps([base, base + 40, base + 80], [2000, 3000, 4000]), null)
+  // 时间戳里的脏值跳过，但仍能从更早的有效点算
+  assert.equal(Math.round(t.rateFromJumps([base, 'x', base + 30000], [2000, 3000, 4000])), 14000)
+  // 区间里没有正增量 → null
+  assert.equal(t.rateFromJumps([base, base + 30000], [0, -1]), null)
+  // 旧行为（跨度够的一对）不变
+  assert.equal(t.rateFromJumps([base, base + 30000], [2500, 3000]), 6000)
+})
+
+test('v1.20.0 paceSourceText：来源说明写清"谁算的、算的哪一段"', () => {
+  assert.match(t.paceSourceText({ rateSource: 'host', rateFrom: 'window' }), /本机记录/)
+  assert.match(t.paceSourceText({ rateSource: 'host', rateFrom: 'tail' }), /最后两次请求/)
+  assert.match(t.paceSourceText({ rateSource: 'samples' }), /本页采样/)
+  assert.match(t.paceSourceText({ rateSource: 'jumps' }), /本页跃升/)
+  assert.equal(t.paceSourceText({ rateSource: null }), '')
+  assert.equal(t.paceSourceText(null), '')
+})
+
+test('v1.20.0 源码契约：速率 / 每轮涨量 / 上一轮涨幅都从 pickPace 走', () => {
+  for (const needle of ['pickPace', 'paceSourceText', 'partsInfo.pace', 'pace.lastRise', 'turnSampleCount']) {
+    assert.ok(SOURCE.includes(needle), `缺 ${needle}`)
+  }
+  assert.ok(!SOURCE.includes('rateFromTurnJumps'), '旧的"只认最后两次跃升"开关应删掉')
 })

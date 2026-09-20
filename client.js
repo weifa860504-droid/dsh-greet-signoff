@@ -426,7 +426,7 @@ var LEGACY_LINES_MAX = 8;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.19.0";
+var CLIENT_VERSION = "1.20.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -3656,8 +3656,11 @@ function tokensPerMinute(samples, minSpanMs) {
 var RATE_MIN_SPAN_MS = 20000;
 
 /**
- * 时间轴采样不够时（刚刷新页面 / 才聊了不到 20 秒）的退路：拿"最近两次轮次跃升"直接算斜率。
- * 跃升点和增量都是真发生过的数，比不给强；但只认跨度 ≥ minSpanMs 的那一对，避免噪声。
+ * 时间轴采样不够时（刚刷新页面 / 才聊了不到 20 秒）的退路：拿跃升点算斜率。
+ * v1.20.0 修正：以前只认"最近两次跃升"，可实测相邻两次跃升常常只差 56~88ms
+ * （token 占用只在每轮请求结束后更新，一个 5 秒刻度里可能挤进好几步），跨度恒不达标 →
+ * 兜底永远是 null。现在从最后一次跃升**往前找第一个跨度 ≥ minSpanMs 的跃升点**，
+ * 增量取这段区间里各次跃升之和（都是真发生过的数），跨度够了才给数。
  * @param {Array<number>} jumpTimes 每次跃升的时刻（升序）。
  * @param {Array<number>} jumps 每次跃升的 token 增量（与 jumpTimes 尾部对齐）。
  * @param {number} [minSpanMs] 最小跨度，缺省 20000。
@@ -3665,15 +3668,24 @@ var RATE_MIN_SPAN_MS = 20000;
  */
 function rateFromJumps(jumpTimes, jumps, minSpanMs) {
   if (!Array.isArray(jumpTimes) || !Array.isArray(jumps)) return null;
-  if (jumpTimes.length < 2 || jumps.length < 2) return null;
+  var count = Math.min(jumpTimes.length, jumps.length);
+  if (count < 2) return null;
   var floor = typeof minSpanMs === "number" && isFinite(minSpanMs) && minSpanMs > 0 ? minSpanMs : RATE_MIN_SPAN_MS;
-  var lastT = jumpTimes[jumpTimes.length - 1];
-  var prevT = jumpTimes[jumpTimes.length - 2];
-  var lastJump = jumps[jumps.length - 1];
-  if (typeof lastT !== "number" || typeof prevT !== "number" || !isFinite(lastT) || !isFinite(prevT)) return null;
-  var spanMs = lastT - prevT;
-  if (!(spanMs >= floor)) return null;
-  var delta = Number(lastJump);
+  var lastT = jumpTimes[count - 1];
+  if (typeof lastT !== "number" || !isFinite(lastT)) return null;
+  var startIndex = -1;
+  for (var i = count - 2; i >= 0; i -= 1) {
+    var stamp = jumpTimes[i];
+    if (typeof stamp !== "number" || !isFinite(stamp)) continue;
+    if (lastT - stamp >= floor) { startIndex = i; break; }
+  }
+  if (startIndex < 0) return null;
+  var spanMs = lastT - jumpTimes[startIndex];
+  var delta = 0;
+  for (var k = startIndex + 1; k < count; k += 1) {
+    var value = Number(jumps[k]);
+    if (isFinite(value) && value > 0) delta += value;
+  }
   if (!(delta > 0)) return null;
   return delta / (spanMs / 60000);
 }
@@ -3733,6 +3745,120 @@ function lastJumpRise(sampler) {
   if (typeof last !== "number" || !isFinite(last) || last <= 0) return null;
   if (typeof prev !== "number" || !isFinite(prev) || prev <= 0) return null;
   return last;
+}
+
+/** 只认"有限正数"，其余（null / 0 / NaN / 字符串）一律当没有。 */
+function pacePositive(value) {
+  return typeof value === "number" && isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * 本页采样账本里的"每轮涨量"均值（宿主半没给时的兜底）。
+ * 账本记的是占用每次跳变的增量，样本不足 1 条就返回 null。
+ * @param {Array<number>} jumps 跃升增量。
+ * @returns {number|null} tok/轮。
+ */
+function paceLocalAvg(jumps) {
+  if (!Array.isArray(jumps) || jumps.length === 0) return null;
+  var sum = 0;
+  var count = 0;
+  for (var i = 0; i < jumps.length; i += 1) {
+    var value = Number(jumps[i]);
+    if (isFinite(value) && value > 0) { sum += value; count += 1; }
+  }
+  if (count === 0) return null;
+  return Math.round(sum / count);
+}
+
+/**
+ * 把「宿主半按本机请求记录算出的节奏」与「本页采样算出的节奏」合成一份读数（纯函数）。
+ *
+ * v1.20.0：宿主优先。宿主半读的是会话投影里的 `requests[]`（每条带 turn / time / prompt），
+ * 所以它**开页即有数、换标签不丢、每轮涨量按"轮末之差"算得准**；
+ * 而本页采样只能看到"这个标签页亲眼看过的占用变化"，切会话或刷新后账本从空开始，
+ * 且一个 5 秒刻度里可能挤进好几步（相邻跃升只差几十毫秒）。本页只作为兜底：
+ * 宿主半没装新版 / 投影文件缺失 / 该会话还没有请求记录时，仍按老办法给个数。
+ *
+ * @param {Object|null} host 宿主半 /context 响应里的 pace 字段。
+ * @param {Array} samples 本页采样点 [{t, used}]。
+ * @param {Array<number>} jumpTimes 本页跃升时刻。
+ * @param {Array<number>} jumps 本页跃升增量。
+ * @param {number} [minSpanMs] 速率最小跨度（缺省 20 秒）。
+ * @returns {Object} {ratePerMinute, rateSource, rateFrom, avgPerTurn, avgSource, turnsSeen, lastRise, msPerTurn, idleMs}
+ */
+function pickPace(host, samples, jumpTimes, jumps, minSpanMs) {
+  var source = host !== null && host !== undefined && typeof host === "object" ? host : {};
+  var out = {
+    ratePerMinute: null,
+    rateSource: null,
+    rateFrom: "",
+    avgPerTurn: null,
+    avgSource: null,
+    turnsSeen: 0,
+    lastRise: null,
+    msPerTurn: null,
+    idleMs: null,
+    hostTurnCount: null,
+    lastTurnSteps: 0
+  };
+  var hostRate = pacePositive(source.ratePerMinute);
+  if (hostRate !== null) {
+    out.ratePerMinute = hostRate;
+    out.rateSource = "host";
+    out.rateFrom = typeof source.rateFrom === "string" ? source.rateFrom : "";
+  } else {
+    var sampleRate = tokensPerMinute(samples, minSpanMs);
+    if (sampleRate !== null) {
+      out.ratePerMinute = sampleRate;
+      out.rateSource = "samples";
+    } else {
+      var jumpRate = rateFromJumps(jumpTimes, jumps, minSpanMs);
+      if (jumpRate !== null) {
+        out.ratePerMinute = jumpRate;
+        out.rateSource = "jumps";
+      }
+    }
+  }
+  var hostAvg = pacePositive(source.avgPerTurn);
+  if (hostAvg !== null) {
+    out.avgPerTurn = Math.round(hostAvg);
+    out.avgSource = "host";
+    out.turnsSeen = Array.isArray(source.rises) ? source.rises.length : 0;
+  } else {
+    var localAvg = paceLocalAvg(jumps);
+    if (localAvg !== null) {
+      out.avgPerTurn = localAvg;
+      out.avgSource = "local";
+      out.turnsSeen = Array.isArray(jumps) ? jumps.length : 0;
+    }
+  }
+  var hostRise = pacePositive(source.lastRise);
+  out.lastRise = hostRise !== null ? hostRise : lastJumpRise({ jumps: jumps });
+  out.msPerTurn = pacePositive(source.msPerTurn);
+  var idle = source.idleMs;
+  out.idleMs = typeof idle === "number" && isFinite(idle) && idle >= 0 ? idle : null;
+  var hostTurns = source.turnCount;
+  out.hostTurnCount = typeof hostTurns === "number" && isFinite(hostTurns) && hostTurns >= 0 ? hostTurns : null;
+  var lastSteps = source.lastTurnSteps;
+  out.lastTurnSteps = typeof lastSteps === "number" && isFinite(lastSteps) && lastSteps > 0 ? lastSteps : 0;
+  return out;
+}
+
+/**
+ * 速率读数的来源说明（写在悬停提示里，让"这个数谁算的、算的是哪段时间"一目了然）。
+ * @param {Object} pace pickPace 的结果。
+ * @returns {string} 中文说明；没有读数时给空串。
+ */
+function paceSourceText(pace) {
+  if (pace === null || pace === undefined || typeof pace !== "object") return "";
+  if (pace.rateSource === "host") {
+    return pace.rateFrom === "tail"
+      ? "（按本机记录算：最近 45 分钟记录太少，取的是最后两次请求）"
+      : "（按本机记录算：这个会话最近 45 分钟的请求）";
+  }
+  if (pace.rateSource === "samples") return "（按本页采样算：打开这一页之后看到的读数变化）";
+  if (pace.rateSource === "jumps") return "（按本页跃升算：本页看到的几次占用跳变）";
+  return "";
 }
 
 /* ─── 会话开始时间：宿主半给（浏览器半看不到 session.header.createdAt） ──── */
@@ -5137,12 +5263,16 @@ function GreetDock(props) {
     }
   }, [now, usedTokens, hasReading, sessionId]);
   var jumps = samplerRef.current.state.jumps;
-  var avgPerTurn = null;
-  if (jumps.length > 0) {
-    var jumpSum = 0;
-    for (var ji = 0; ji < jumps.length; ji += 1) jumpSum += jumps[ji];
-    avgPerTurn = Math.round(jumpSum / jumps.length);
-  }
+  var jumpTimes = samplerRef.current.state.jumpTimes;
+  var samples = Array.isArray(samplerRef.current.state.samples) ? samplerRef.current.state.samples : [];
+  // v1.20.0：速率与"每轮涨量"优先用**宿主半按本机请求记录算出来的数**（/context 响应里的 pace）——
+  // 它读的是会话投影里的 requests[]，所以开页即有数、换标签页/换会话不丢、每轮涨量按"轮末之差"算得准。
+  // 本页采样只作兜底（宿主半没装新版 / 投影文件缺失 / 这条会话还没有请求记录）。
+  var hostPace = partsInfo !== null && partsInfo !== undefined && typeof partsInfo === "object" ? partsInfo.pace : null;
+  var pace = pickPace(hostPace, samples, jumpTimes, jumps, RATE_MIN_SPAN_MS);
+  var avgPerTurn = pace.avgPerTurn;
+  // 参与均值计算的样本数（宿主给的是"按轮"，本页给的是"跃升次数"），只用于文案。
+  var turnSampleCount = pace.turnsSeen;
   // 剩余：budget 口径 = 到"必须换会话"线还剩多少（超了就是 0）；window 口径 = 到模型窗口还剩多少。
   var remaining = hasReading
     ? (meterMode === "budget"
@@ -5159,10 +5289,10 @@ function GreetDock(props) {
           + (overRatioText === "" ? "" : "，" + overRatioText) + "）"
           + " · 占模型窗口 " + windowPercent + "%（模型窗口 " + formatTokens(occupancy.capacity) + "）"
           + " · 到线还剩 ~" + formatTokens(remaining)
-          + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + jumps.length + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : "")
+          + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + turnSampleCount + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : "")
         : "上下文占用 " + percent + "% · ~" + formatTokens(occupancy.used) + " / " + formatTokens(occupancy.capacity)
           + " · 剩余 ~" + formatTokens(remaining)
-          + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + jumps.length + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : ""))
+          + (turnsLeft !== null ? " · 约还能聊 " + turnsLeft + " 轮（最近 " + turnSampleCount + " 轮均值 ~" + formatTokens(avgPerTurn) + "/轮）" : ""))
     : "上下文占用未知（发一条消息后显示）";
   var tip = detail;
   // 还没有任何请求记录时不显示 "0%"（那看起来像坏了），显示一个短横。
@@ -5215,16 +5345,10 @@ function GreetDock(props) {
   }, [now, sessionId, serverAnswersThisSession, serverStartedAt]);
   var elapsedText = sessionId.length === 0 ? "" : (activeSessionMs > 0 ? formatDuration(activeSessionMs) : "刚刚");
   var startClock = serverAnswersThisSession ? formatClock(serverStartedAt) : "";
-  // 实测消耗速率：拿最近 45 分钟的读数采样点算 token/分钟。v1.18.0 起门槛放宽到 20 秒，
-  // 采样不够就直接用"最近两次轮次跃升"的斜率兜底 —— 聊得快的会话两轮常常不到一分钟，
-  // 以前卡 60 秒会让这一格一直显示 "—"（发哥反馈"上一轮就没显示"）。
-  var samples = Array.isArray(samplerRef.current.state.samples) ? samplerRef.current.state.samples : [];
-  var ratePerMinute = tokensPerMinute(samples, RATE_MIN_SPAN_MS);
-  var rateFromTurnJumps = false;
-  if (ratePerMinute === null) {
-    ratePerMinute = rateFromJumps(samplerRef.current.state.jumpTimes, samplerRef.current.state.jumps);
-    rateFromTurnJumps = ratePerMinute !== null;
-  }
+  // 实测消耗速率（v1.20.0）：先用宿主半按本机请求记录算出的速率（开页即有），其次本页 45 分钟采样，
+  // 最后才是"跃升点斜率"兜底 —— 三级优先级的决策都在 pickPace 里，这里只取结果。
+  var ratePerMinute = pace.ratePerMinute;
+  var rateNote = paceSourceText(pace);
   // 读数新鲜度：token 读数只在上一次请求结束后才更新，说清楚"这是几分钟前的读数"，
   // 免得看着时间在走、百分比不动就以为进度条坏了。
   var lastUsedAtValue = samplerRef.current.state.lastUsedAt;
@@ -5236,7 +5360,13 @@ function GreetDock(props) {
   }
   if (ratePerMinute !== null) {
     detail += " · 实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分"
+      + rateNote
       + (turnsLeft === null ? "" : "（照这个速度，到线大约还有 " + turnsLeft + " 轮）");
+  }
+  // "每轮涨量"至少要有两个轮次端点才算得出来。宿主半还在第一条会话的第一轮时（turnCount < 2），
+  // 直接说清为什么那一格是空的 —— 免得看着像功能坏了（v1.20.0）。
+  if (pace.avgSource === null && pace.rateSource === "host" && pace.hostTurnCount !== null && pace.hostTurnCount < 2) {
+    detail += " · 每轮涨量要等这一轮结束（这条会话现在只有 1 轮）";
   }
   if (staleText !== "") detail += " · " + staleText;
   // 本条会话花了多少钱（v1.14.0）：token 是抽象单位，钱才有体感；也顺手印证"输出比缓存读贵 200 倍"。
@@ -5457,8 +5587,9 @@ function GreetDock(props) {
   var turnsKpiText = turnsLeft === null ? "" : turnsLeft + " 轮";
   var staleSpan = staleText === "" ? null : React.createElement("span", null, "· " + staleText);
   // v1.19.0（发哥要求）：这一行末尾再加一段「上一轮 ↑X.X 万」—— 上一轮回复让上下文涨了多少。
-  // 数据就是采样账本里最近一次轮次跃升；没有（还没聊满两轮）就整段不显示。涨幅 ≥ 5 万标警示色。
-  var lastRise = lastJumpRise(samplerRef.current.state);
+  // v1.20.0：数据优先取宿主半按"轮末之差"算出来的 lastRise（按轮才算得准，且开页即有），
+  // 宿主给不了才退回本页采样账本里最近一次跃升。涨幅 ≥ 5 万标警示色。
+  var lastRise = pace.lastRise;
   var riseWarn = lastRise !== null && lastRise >= RISE_WARN_TOKENS;
   var riseSpan = lastRise === null ? null
     : React.createElement("span", {
@@ -6804,6 +6935,10 @@ module.exports = {
     tokensPerMinute: tokensPerMinute,
     rateFromJumps: rateFromJumps,
     rateMinSpanMs: RATE_MIN_SPAN_MS,
+    // v1.20.0：宿主 pace 与本地采样的合成（速率 / 每轮涨量 / 来源文案）
+    pickPace: pickPace,
+    paceSourceText: paceSourceText,
+    paceLocalAvg: paceLocalAvg,
     // v1.18.0：活跃时长记账 + 采样账本（按会话 id 分开存，刷新/切会话都不串）
     activeElapsed: activeElapsed,
     emptySampler: emptySampler,
