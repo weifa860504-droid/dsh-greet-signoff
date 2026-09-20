@@ -1286,12 +1286,16 @@ function schemeOptions(showAll, current) {
     }
     groups[index[name]].items.push(item);
   }
-  return groups.map(function (group) {
+  var nodes = groups.map(function (group) {
     return React.createElement("optgroup", { key: group.name, label: group.name },
       group.items.map(function (item) {
         return React.createElement("option", { key: item.id, value: item.id }, item.label);
       }));
   });
+  // v1.19.0：末尾那条「▾ 显示全部 / ▴ 只看常用」与动效、车型完全同一套文案（不再单挂一个按钮）。
+  var more = moreOption(showAll === true, BAR_SCHEMES.length, PRIME_SCHEMES.length, "套");
+  nodes.push(React.createElement("option", { key: more.value, value: more.value }, more.label));
+  return nodes;
 }
 
 function hexToRgb(hex) {
@@ -1475,6 +1479,41 @@ function pickOptions(all, prime, showAll, current) {
   var kept = all.filter(function (item) { return prime.indexOf(item.value) !== -1; });
   var extra = all.filter(function (item) { return prime.indexOf(item.value) === -1 && item.value === current; });
   return kept.concat(extra);
+}
+
+/**
+ * 「精选 ↔ 全部」的统一文案（v1.19.0）：配色 / 动效 / 车型三处长尾下拉以前各写各的 ——
+ * 配色旁边挂一个「全部 37」按钮，动效与车型是下拉末尾一条「▾ 显示全部（N 项）」，
+ * 而且展开之后就再也收不回来（只能去设置页底部那个开关切）。
+ * 现在三处共用这两条文案与同一个开关值（`gs.signoff.ui.advOptions`）：
+ * 收起时「▾ 显示全部（N 套）」，展开时「▴ 只看常用（M 套）」——展开后能从同一个下拉里收回精选。
+ * @param {boolean} showAll 当前是不是"全部"。
+ * @param {number} allCount 全部条数。
+ * @param {number} primeCount 精选条数。
+ * @param {string} unit 量词（"项" / "套" / "种"）。
+ */
+function moreOptionLabel(showAll, allCount, primeCount, unit) {
+  var u = typeof unit === "string" && unit.length > 0 ? unit : "项";
+  var all = typeof allCount === "number" && isFinite(allCount) ? allCount : 0;
+  var prime = typeof primeCount === "number" && isFinite(primeCount) ? primeCount : 0;
+  if (showAll === true) return "▴ 只看常用（" + prime + " " + u + "）";
+  return "▾ 显示全部（" + all + " " + u + "）";
+}
+
+/**
+ * 那条统一下拉项（value 固定 `__more__` / `__less__`，认这两个值就切 advOptions）。
+ * @returns {{value: string, label: string}}
+ */
+function moreOption(showAll, allCount, primeCount, unit) {
+  return {
+    value: showAll === true ? "__less__" : "__more__",
+    label: moreOptionLabel(showAll, allCount, primeCount, unit)
+  };
+}
+
+/** 认「▾ 显示全部 / ▴ 只看常用」这两个特殊值；是就切开关并返回 true。 */
+function isMoreOptionValue(value) {
+  return value === "__more__" || value === "__less__";
 }
 
 /** 自定义小车图片的大小上限（localStorage 存 base64，留足余量）。 */
@@ -2394,12 +2433,14 @@ function Editor() {
    * 长尾下拉（v1.14.0）：默认只列"精选"几项，末尾挂一条「▾ 显示全部（N 项）」——
    * 选中它只把 advOptions 打开、不改变当前值，下拉立刻变全量。这样 40 动效 / 30 车型
    * 不会再一上来就糊满整屏，想要冷门选项也就多点一下。
+   * v1.19.0：文案与「收起」由 moreOption / moreOptionLabel 统一产出（配色也改成同一套），
+   * 展开之后末尾那条变成「▴ 只看常用（M 项）」，从同一个下拉里就能收回精选。
    */
   function pickedCell(label, all, prime, value, onChange, key, wide) {
     var list = pickOptions(all, prime, ui.advOptions === true, value);
-    if (ui.advOptions !== true) list = list.concat([{ value: "__more__", label: "▾ 显示全部（" + all.length + " 项）" }]);
+    list = list.concat([moreOption(ui.advOptions === true, all.length, prime.length, "项")]);
     return selectCell(label, list, value, function (next) {
-      if (next === "__more__") { setUiPrefs({ advOptions: true }); return; }
+      if (isMoreOptionValue(next)) { setUiPrefs({ advOptions: next === "__more__" }); return; }
       onChange(next);
     }, key, wide);
   }
@@ -3221,13 +3262,14 @@ function Editor() {
         }),
         React.createElement("select", {
           className: "gs-input gs-select", value: ui.scheme,
-          title: "共 " + BAR_SCHEMES.length + " 套配色（默认只列常用 " + PRIME_SCHEMES.length + " 套）",
-          onChange: function (event) { setUiPrefs({ scheme: event.target.value }); }
-        }, schemeOptions(ui.advOptions === true, ui.scheme)),
-        ui.advOptions === true ? null : React.createElement("button", {
-          type: "button", className: "gs-btn", title: "显示全部 " + BAR_SCHEMES.length + " 套配色",
-          onClick: function () { setUiPrefs({ advOptions: true }); }
-        }, "全部 " + BAR_SCHEMES.length)
+          title: "共 " + BAR_SCHEMES.length + " 套配色（默认只列常用 " + PRIME_SCHEMES.length + " 套；"
+            + "展开或收回都在下拉末尾那一条，和动效、车型一个用法）",
+          onChange: function (event) {
+            var next = event.target.value;
+            if (isMoreOptionValue(next)) { setUiPrefs({ advOptions: next === "__more__" }); return; }
+            setUiPrefs({ scheme: next });
+          }
+        }, schemeOptions(ui.advOptions === true, ui.scheme))
       ), "scheme"),
       selectCell("时间显示", [
         { value: "on", label: "显示（已聊多久 + 实测速率）" },
@@ -3316,6 +3358,7 @@ function Editor() {
         );
       })(),
       // 小车：默认只列 7 个常见车型，其余收进「显示全部」（v1.14.0）。
+      // v1.19.0：展开/收起文案与配色、动效统一（同一套 moreOption）。
       selectCell("小车", (function () {
         var all = BAR_MARKERS.map(function (item) {
           return { value: item.value === "" ? "__none__" : item.value, label: item.label === "" ? "无" : (item.label + " " + item.name) };
@@ -3323,12 +3366,12 @@ function Editor() {
         var current = ui.markerImage !== "" ? "__custom__" : (ui.marker === "" ? "__none__" : ui.marker);
         var prime = PRIME_MARKERS.map(function (one) { return one === "" ? "__none__" : one; });
         var list = pickOptions(all, prime, ui.advOptions === true, current);
-        if (ui.advOptions !== true) list = list.concat([{ value: "__more__", label: "▾ 显示全部（" + all.length + " 种）" }]);
+        list = list.concat([moreOption(ui.advOptions === true, all.length, prime.length, "种")]);
         if (ui.markerImage !== "") list = list.concat([{ value: "__custom__", label: "自定义图片" }]);
         return list;
       })(), ui.markerImage !== "" ? "__custom__" : (ui.marker === "" ? "__none__" : ui.marker),
         function (value) {
-          if (value === "__more__") { setUiPrefs({ advOptions: true }); return; }
+          if (isMoreOptionValue(value)) { setUiPrefs({ advOptions: value === "__more__" }); return; }
           if (value === "__custom__") return;                       // 只是显示当前状态，不改变
           if (value === "__none__") { setUiPrefs({ marker: "", markerImage: "" }); return; }
           setUiPrefs({ marker: value, markerImage: "" });
@@ -4411,8 +4454,55 @@ function tintOf(color, alpha) {
  *   showMode, modeText, modeSuffix, showRate, rateText, showTurns, turnsText, tone, palette, dark}
  * @returns {Array} 三个 { key, label, value, suffix, color, background, state }。
  */
+/**
+ * 「上下文占用」那一格的悬停说明（v1.19.0）：把"这个数到底是怎么来的"写清楚。
+ * 读数就是 DSH 自己算的那份上下文投影（`contextPressure`）：
+ *   显示值 = pressureTokens（**上一次**请求真正喂进去的 prompt）+（当前界面总览 − 采样那一刻的总览）。
+ * 所以它是"发下一条消息时预计要喂进去多少"，不是"屏幕上现在有多少字"，也不会随打字实时变——
+ * 一轮请求结束后才刷新一次，天然滞后一轮。这一格以前只有数字没有解释，看着像随手估的。
+ * @param {{usedTokens?: number, warn?: number, critical?: number, capacity?: number, meterMode?: string}} opts
+ * @returns {string} 多行 tooltip 文本。
+ */
+function occupancyTip(opts) {
+  var o = opts !== null && typeof opts === "object" ? opts : {};
+  var num = function (value) {
+    return typeof value === "number" && isFinite(value) && value > 0 ? value : null;
+  };
+  var meterMode = o.meterMode === "window" ? "window" : "budget";
+  var used = num(o.usedTokens);
+  var warn = num(o.warn);
+  var critical = num(o.critical);
+  var capacity = num(o.capacity);
+  var lines = ["上下文占用：这个数是怎么来的（采样口径）"];
+  lines.push("· 说人话：它是「发下一条消息时预计要喂进去多少 token」，不是屏幕上现在有多少字，"
+    + "也不是谁估的 —— 是 DSH 自己算出来的那份上下文投影。");
+  lines.push("· 数怎么来的：上一次请求真正喂进去的 prompt（pressureTokens）"
+    + " + 那次采样之后界面上新增的部分（当前总览 − 采样时的总览）。");
+  lines.push("· 多久刷新：只在每轮请求结束后更新一次，所以天然滞后一轮 —— 你刚发的那句话要等这轮答完才计入。");
+  if (meterMode === "budget") {
+    if (warn !== null && critical !== null) {
+      lines.push("· 百分比口径：按你的预算线算（黄线 " + formatWan(warn) + " tok 提醒 / 红线 "
+        + formatWan(critical) + " tok 必须换会话），100% = 红线；想看「占模型窗口」的老口径，去设置里切。");
+    }
+    if (used !== null && critical !== null) {
+      lines.push("· 这次读数：约 " + formatWan(used) + " tok"
+        + (used > critical ? "（已经超过红线，建议开新会话）" : "（红线 " + formatWan(critical) + " tok）") + "。");
+    }
+  } else {
+    if (used !== null && capacity !== null) {
+      lines.push("· 百分比口径：按模型窗口算（读数 " + formatWan(used) + " tok / 窗口 " + formatWan(capacity)
+        + " tok），所以看着永远很安全 —— 这只是旧口径。");
+    } else {
+      lines.push("· 百分比口径：按模型窗口算（旧口径，看着永远很安全）。");
+    }
+  }
+  lines.push("· 想知道是谁占的：点下面的「上下文构成」，按占比从大到小排，前几名就是能砍的地方。");
+  return lines.join("\n");
+}
+
 function dockKpiCells(opts) {
   var o = opts !== undefined && opts !== null ? opts : {};
+  var occupancyTipText = typeof o.occupancyTip === "string" ? o.occupancyTip : "";
   var palette = Array.isArray(o.palette) && o.palette.length >= 3 ? o.palette : BAR_SCHEMES[0].colors;
   var dark = o.dark === true;
   var tone = o.tone === "critical" || o.tone === "warn" ? o.tone : "ok";
@@ -4436,7 +4526,7 @@ function dockKpiCells(opts) {
   var violet = dark ? KPI_VIOLET_DARK : KPI_VIOLET;
   var teal = dark ? KPI_TEAL_DARK : KPI_TEAL;
   var rose = dark ? KPI_ROSE_DARK : KPI_ROSE;
-  var cell = function (key, label, text, color, suffix) {
+  var cell = function (key, label, text, color, suffix, title) {
     var known = text !== "";
     return {
       key: key,
@@ -4445,11 +4535,13 @@ function dockKpiCells(opts) {
       suffix: known && typeof suffix === "string" ? suffix : "",
       color: known ? color : "",
       background: known ? tintOf(color, alpha) : "",
+      // v1.19.0：每格可以带自己的悬停说明；占用格用 occupancyTip 把采样口径写清楚。
+      title: typeof title === "string" ? title : "",
       state: key === "usage" ? tone : (known ? "on" : "off")
     };
   };
   var cells = [
-    cell("usage", "上下文占用", hasReading ? occText : "", stateColor, limitText),
+    cell("usage", "上下文占用", hasReading ? occText : "", stateColor, limitText, occupancyTipText),
     cell("cost", "本条会话花费", costText === "" ? "" : "≈" + costText, gold),
     cell("time", "已聊时长", elapsedText, blue)
   ];
@@ -5386,6 +5478,14 @@ function GreetDock(props) {
         hasReading: hasReading,
         occupancyText: meterMode === "budget" ? formatWan(usedTokens) : percent + "%",
         limitText: "/ " + (meterMode === "budget" ? formatWan(budget.critical) : formatWan(occupancy.capacity)),
+        // v1.19.0：占用格的悬停说明 —— 把"这个数怎么来的、多久刷新一次"写清楚（以前只有数字）。
+        occupancyTip: occupancyTip({
+          usedTokens: hasReading ? usedTokens : null,
+          warn: budget.warn,
+          critical: budget.critical,
+          capacity: occupancy.capacity,
+          meterMode: meterMode
+        }),
         costText: ui.showCost === false ? "" : costText,
         elapsedText: elapsedText,
         showMode: true,
@@ -5426,7 +5526,11 @@ function GreetDock(props) {
               modeMenuNode
             );
           }
-          return React.createElement("div", { className: "gs-dock-kpi", key: "kpi-" + cell.key },
+          return React.createElement("div", {
+            className: "gs-dock-kpi", key: "kpi-" + cell.key,
+            // v1.19.0：占用格自带说明（采样口径），其余格没有就回落到整排的 title。
+            title: cell.title === "" ? undefined : cell.title
+          },
             React.createElement("span", { className: "gs-dock-kpi-lab" }, cell.label),
             React.createElement("span", { className: "gs-dock-kpi-val", style: cellStyle }, kpiValInner(cell))
           );
@@ -6680,6 +6784,10 @@ module.exports = {
     budgetModeCycle: BUDGET_MODE_CYCLE,
     // v1.14.0：长尾选项裁剪 + 金额写法（设置页精简 / 花费显示都靠这两个纯函数）
     pickOptions: pickOptions,
+    // v1.19.0：长尾选项「精选 ↔ 全部」的统一文案与那条特殊项（配色/动效/车型共用）
+    moreOptionLabel: moreOptionLabel,
+    moreOption: moreOption,
+    isMoreOptionValue: isMoreOptionValue,
     formatCny: formatCny,
     primeAnimations: PRIME_ANIMATIONS,
     primeSchemes: PRIME_SCHEMES,
@@ -6724,6 +6832,8 @@ module.exports = {
     mixRgb: mixRgb,
     // v1.15.0：方案 7「KPI 三格」的读数与数字胶囊底（配色 A 语义色 + C 胶囊底）
     dockKpiCells: dockKpiCells,
+    // v1.19.0：占用格的悬停说明（采样口径：上一次请求的 prompt + 之后新增，滞后一轮）
+    occupancyTip: occupancyTip,
     tintOf: tintOf,
     rampColor: rampColor,
     barScale: barScale,

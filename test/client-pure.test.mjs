@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault', 'moreOptionLabel', 'moreOption', 'isMoreOptionValue', 'occupancyTip']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -573,6 +573,68 @@ test('长尾选项：精选表真的是"少"的，且各自没有重复项', () 
     assert.ok(list.length <= 8, '精选不该超过 8 项')
     assert.equal(new Set(list).size, list.length, '精选表里有重复项')
   }
+})
+
+/* ── v1.19.0：长尾选项「精选 ↔ 全部」统一 + 占用格采样口径 ─────────── */
+
+test('长尾选项开关：收起/展开两条文案由同一个纯函数产出，配色/动效/车型只是量词不同', () => {
+  assert.equal(t.moreOptionLabel(false, 37, 6, '套'), '▾ 显示全部（37 套）')
+  assert.equal(t.moreOptionLabel(true, 37, 6, '套'), '▴ 只看常用（6 套）')
+  assert.equal(t.moreOptionLabel(false, 40, 8, '项'), '▾ 显示全部（40 项）')
+  assert.equal(t.moreOptionLabel(true, 40, 8, '项'), '▴ 只看常用（8 项）')
+  assert.equal(t.moreOptionLabel(false, 31, 7, '种'), '▾ 显示全部（31 种）')
+  // 量词缺省是"项"；坏值不炸（NaN 当 0）
+  assert.equal(t.moreOptionLabel(false, 3, 1, undefined), '▾ 显示全部（3 项）')
+  assert.equal(t.moreOptionLabel(false, Number.NaN, Number.NaN, ''), '▾ 显示全部（0 项）')
+})
+
+test('长尾选项开关：那条特殊项的 value 决定往哪切，认得出 __more__ / __less__', () => {
+  assert.deepEqual(t.moreOption(false, 37, 6, '套'), { value: '__more__', label: '▾ 显示全部（37 套）' })
+  assert.deepEqual(t.moreOption(true, 37, 6, '套'), { value: '__less__', label: '▴ 只看常用（6 套）' })
+  assert.equal(t.isMoreOptionValue('__more__'), true)
+  assert.equal(t.isMoreOptionValue('__less__'), true)
+  // 正常选项（配色 id / 动效名）不能被当成开关，否则选不中
+  assert.equal(t.isMoreOptionValue('classic'), false)
+  assert.equal(t.isMoreOptionValue('shine'), false)
+  assert.equal(t.isMoreOptionValue(undefined), false)
+  // 精选表里不许混进这两个保留值
+  assert.equal(t.primeSchemes.includes('__more__'), false)
+  assert.equal(t.primeAnimations.includes('__less__'), false)
+  assert.equal(t.primeMarkers.includes('__more__'), false)
+})
+
+test('占用格说明（v1.19.0）：写明"上一次请求的 prompt + 之后新增"、滞后一轮，并带上当前预算线', () => {
+  const tip = t.occupancyTip({ usedTokens: 248930, warn: 75000, critical: 110000, capacity: 1000000, meterMode: 'budget' })
+  assert.match(tip, /上下文占用/)
+  assert.match(tip, /上一次请求/)
+  assert.match(tip, /滞后一轮/)
+  assert.match(tip, /24\.9 万/)
+  assert.match(tip, /11 万/)
+  assert.match(tip, /超过红线/)
+  // 预算档下说明里要写明 100% = 红线（发哥看进度条就是按这条线理解的）
+  assert.match(tip, /100% = 红线/)
+  // 反向：预算档不该走"模型窗口"那一套说明
+  assert.equal(tip.includes('按模型窗口算'), false)
+})
+
+test('占用格说明：旧口径（占模型窗口）换另一套说法；空参 / 脏值也不炸', () => {
+  const win = t.occupancyTip({ usedTokens: 248930, capacity: 1000000, meterMode: 'window' })
+  assert.match(win, /模型窗口/)
+  assert.equal(win.includes('预算线'), false)
+  const empty = t.occupancyTip()
+  assert.match(empty, /上下文占用/)
+  const bad = t.occupancyTip({ usedTokens: Number.NaN, warn: 'x', critical: null, meterMode: 'nonsense' })
+  assert.equal(typeof bad, 'string')
+  assert.match(bad, /上下文占用/)
+})
+
+test('占用格把采样口径挂在自己的 title 上（这一格不再只有一个数字）', () => {
+  const cells = t.dockKpiCells({ hasReading: true, occupancyText: '4.6 万', limitText: '/ 11 万', occupancyTip: '口径说明' })
+  assert.equal(cells[0].title, '口径说明')
+  assert.equal(cells[1].title, '')
+  assert.equal(cells[2].title, '')
+  // 没传就空串：老调用方（不传 occupancyTip）行为不变
+  assert.equal(t.dockKpiCells({ hasReading: true, occupancyText: '4.6 万' })[0].title, '')
 })
 
 test('金额写法：分、角、元都读得出来，坏值不炸', () => {
