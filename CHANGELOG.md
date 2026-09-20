@@ -3,6 +3,21 @@
 本文件记录 `dsh-greet-signoff` 的每个发布版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.21.0] - 2026-09-20
+
+> 发哥在桌面端（Chrome app 窗口）说「这个快捷方式不显示上下文的横幅」——
+> 无头 CDP 抓到真凶：`GreetDock` 在**拿不到上下文读数**的客户端里裸读 `occupancy.capacity`，
+> 抛 `TypeError: Cannot read properties of null (reading 'capacity')`，
+> 整个 `conversation.input.dock` 槽位崩成一个空占位（`data-slot-error`）→ 进度条和红底横幅一起消失。
+> **纯浏览器半修复 → 刷新页面即生效**；宿主半只是版本号跟着走（不重启只会多一行版本提示）。
+
+### 修复
+
+- **没有 `contextPressure` 读数时不再把整条进度条炸掉**：KPI 的 `limitText` 与占用格 `occupancyTip`
+  里的 `occupancy.capacity` 改成 `hasReading ? occupancy.capacity : null/—`。此前只要宿主投影还没送到
+  （新开的窗口 / 桌面端 app 窗口 / 刚连上的客户端），`occupancy` 就是 `null`，一读就崩，
+  连带把「到线红底横幅」一起拖下水——所以表现是"有的窗口有进度条、有的窗口什么都没有"。
+
 ## [1.20.0] - 2026-09-20
 
 > 发哥指着进度条上一直是空白的那两格问「实测速率 / 到线约还有，怎么老是不显示？」——

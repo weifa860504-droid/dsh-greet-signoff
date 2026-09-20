@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.20.0'
+const HOST_VERSION = '1.21.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200

@@ -426,7 +426,7 @@ var LEGACY_LINES_MAX = 8;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.20.0";
+var CLIENT_VERSION = "1.21.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -5608,13 +5608,13 @@ function GreetDock(props) {
     ? dockKpiCells({
         hasReading: hasReading,
         occupancyText: meterMode === "budget" ? formatWan(usedTokens) : percent + "%",
-        limitText: "/ " + (meterMode === "budget" ? formatWan(budget.critical) : formatWan(occupancy.capacity)),
+        limitText: "/ " + (meterMode === "budget" ? formatWan(budget.critical) : (hasReading ? formatWan(occupancy.capacity) : "—")),
         // v1.19.0：占用格的悬停说明 —— 把"这个数怎么来的、多久刷新一次"写清楚（以前只有数字）。
         occupancyTip: occupancyTip({
           usedTokens: hasReading ? usedTokens : null,
           warn: budget.warn,
           critical: budget.critical,
-          capacity: occupancy.capacity,
+          capacity: hasReading ? occupancy.capacity : null,
           meterMode: meterMode
         }),
         costText: ui.showCost === false ? "" : costText,
