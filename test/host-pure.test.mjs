@@ -483,6 +483,109 @@ test('宿主半：aggregateLedger —— today / week、窗口外忽略、坏台
   assert.equal(h.sumLedgerDay(null).rounds, 0)
 })
 
+test('宿主半：resolvePricing —— 自定义单价、范围夹取、非法回落默认', () => {
+  // 缺省（一个都不传）→ 内置默认价，source=default（这就是老行为）
+  assert.deepEqual(h.resolvePricing(), { in: 1, cacheRead: 0.02, out: 4, source: 'default' })
+  assert.deepEqual(h.resolvePricing(null), { in: 1, cacheRead: 0.02, out: 4, source: 'default' })
+  assert.deepEqual(h.resolvePricing({}), { in: 1, cacheRead: 0.02, out: 4, source: 'default' })
+  // 查询参数天然是字符串，必须认
+  assert.deepEqual(h.resolvePricing({ priceIn: '2', priceCache: '0.5', priceOut: '8' }), {
+    in: 2, cacheRead: 0.5, out: 8, source: 'custom',
+  })
+  // 数字也认
+  assert.deepEqual(h.resolvePricing({ priceIn: 2, priceCache: 0.5, priceOut: 8 }), {
+    in: 2, cacheRead: 0.5, out: 8, source: 'custom',
+  })
+  // 只传一个：其余回落默认，整体仍算 custom
+  assert.deepEqual(h.resolvePricing({ priceIn: '3' }), { in: 3, cacheRead: 0.02, out: 4, source: 'custom' })
+  // 空串 / 空白 / 非数字 / NaN / 无穷 / 越界 → 回落默认；全都非法时 source=default
+  const invalid = [
+    { priceIn: '' }, { priceIn: '   ' }, { priceIn: 'abc' }, { priceIn: '1abc' },
+    { priceIn: Number.NaN }, { priceIn: Number.POSITIVE_INFINITY }, { priceIn: Number.NEGATIVE_INFINITY },
+    { priceIn: -1 }, { priceIn: -0.0001 }, { priceIn: 1000.01 }, { priceIn: '1e9' },
+    { priceIn: null }, { priceIn: undefined }, { priceIn: {} }, { priceIn: [] }, { priceIn: true },
+    { priceCache: 'x' }, { priceOut: 'x' },
+  ]
+  for (const raw of invalid) {
+    assert.deepEqual(h.resolvePricing(raw), { in: 1, cacheRead: 0.02, out: 4, source: 'default' }, `应回落默认：${JSON.stringify(raw)}`)
+  }
+  // 边界值：0 是合法价（等于白送），只有负数和 >1000 才算越界
+  assert.deepEqual(h.resolvePricing({ priceIn: '0' }), { in: 0, cacheRead: 0.02, out: 4, source: 'custom' })
+  assert.equal(h.resolvePricing({ priceIn: '1000' }).in, 1000)
+  assert.equal(h.resolvePricing({ priceIn: '1000' }).source, 'custom')
+  // 小数照收，不做四舍五入
+  assert.deepEqual(h.resolvePricing({ priceIn: '1.234567' }).in, 1.234567)
+})
+
+test('宿主半：reconcileGap —— 与台账对账的差额比例 + 除零保护', () => {
+  assert.deepEqual(h.reconcileGap(3.1575, 3.1575), { computedCNY: 3.1575, ledgerCostCNY: 3.1575, gapRatio: 0 })
+  assert.deepEqual(h.reconcileGap(2, 1), { computedCNY: 2, ledgerCostCNY: 1, gapRatio: 1 })
+  // 差额取绝对值：算少了也是 gap
+  assert.deepEqual(h.reconcileGap(0.5, 1), { computedCNY: 0.5, ledgerCostCNY: 1, gapRatio: 0.5 })
+  assert.equal(h.reconcileGap(1, 1).gapRatio, 0)
+  assert.equal(h.reconcileGap(0.3333, 0.3333).gapRatio, 0)
+  assert.deepEqual(h.reconcileGap(4, 3), { computedCNY: 4, ledgerCostCNY: 3, gapRatio: h.round4(1 / 3) })
+  // 台账为 0（或负 / 非数字）→ gapRatio 一律 0，绝不除零出 Infinity/NaN
+  assert.deepEqual(h.reconcileGap(1, 0), { computedCNY: 1, ledgerCostCNY: 0, gapRatio: 0 })
+  assert.deepEqual(h.reconcileGap(0, 0), { computedCNY: 0, ledgerCostCNY: 0, gapRatio: 0 })
+  assert.deepEqual(h.reconcileGap(1, -5), { computedCNY: 1, ledgerCostCNY: -5, gapRatio: 0 })
+  assert.deepEqual(h.reconcileGap('x', Number.NaN), { computedCNY: 0, ledgerCostCNY: 0, gapRatio: 0 })
+  assert.deepEqual(h.reconcileGap(undefined, null), { computedCNY: 0, ledgerCostCNY: 0, gapRatio: 0 })
+  // 两个数都保留 4 位小数，比例也是 4 位
+  assert.deepEqual(h.reconcileGap(1.00005, 0.99995), { computedCNY: 1.0001, ledgerCostCNY: 1, gapRatio: h.round4(0.0001) })
+})
+
+test('宿主半：costBody —— 自定义单价算钱 + pricing/reconcile 字段', () => {
+  const at = Date.now()
+  const noParams = h.costBody('cost-session-1', 7, at)
+  // 不带参数：新增字段存在，原来的字段名与口径一个都不变
+  assert.deepEqual(noParams.pricing, { in: 1, cacheRead: 0.02, out: 4, source: 'default' })
+  assert.deepEqual(noParams.unit, { uncachedPerM: 1, cacheReadPerM: 0.02, outputPerM: 4 })
+  for (const key of ['sessionId', 'source', 'sessionSource', 'unit', 'session', 'today', 'week', 'top', 'note']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(noParams, key), `老字段不能少：${key}`)
+  }
+  // 不带参数时，session 的钱必须还是"按内置价算"的那一份口径
+  assert.equal(noParams.session.costCNY, h.costCNYOf(noParams.session.uncached, noParams.session.cacheRead, noParams.session.output))
+  // reconcile 与 today/week 一样都是真实台账数据，只做口径检查（不写死数值）
+  assert.deepEqual(Object.keys(noParams.reconcile).sort(), ['computedCNY', 'gapRatio', 'ledgerCostCNY'])
+  // computedCNY = 扫描到的全部会话按本次生效单价加总（与 top 排行同一批数据、同一份单价）
+  assert.equal(noParams.reconcile.computedCNY, h.sumSessionCosts(h.scanSessionCosts(), noParams.pricing))
+  assert.ok(Number.isFinite(noParams.reconcile.computedCNY))
+  // ledgerCostCNY 就是台账自带的 cost（week 或 today 那一份，取决于台账覆盖的天数）
+  assert.ok(
+    noParams.reconcile.ledgerCostCNY === noParams.week.ledgerCostCNY
+    || noParams.reconcile.ledgerCostCNY === noParams.today.ledgerCostCNY,
+  )
+  assert.ok(Number.isFinite(noParams.reconcile.gapRatio) && noParams.reconcile.gapRatio >= 0)
+  assert.ok(Number.isFinite(noParams.today.costCNY))
+
+  // 带参数：四处金额（session / today / week）都用同一份自定义价
+  const custom = h.costBody('cost-session-1', 7, at, { priceIn: '2', priceCache: '3', priceOut: '5' })
+  assert.deepEqual(custom.pricing, { in: 2, cacheRead: 3, out: 5, source: 'custom' })
+  assert.equal(custom.today.costCNY, h.costCNYWith(noParams.today.uncached, noParams.today.cacheRead, noParams.today.output, custom.pricing))
+  assert.equal(custom.week.costCNY, h.costCNYWith(noParams.week.uncached, noParams.week.cacheRead, noParams.week.output, custom.pricing))
+  assert.equal(custom.session.costCNY, h.costCNYWith(noParams.session.uncached, noParams.session.cacheRead, noParams.session.output, custom.pricing))
+  // 对账的"算出金额"也是按这次的自定义价（同一批会话、同一份单价），所以换价后必须跟着变
+  assert.equal(custom.reconcile.computedCNY, h.sumSessionCosts(h.scanSessionCosts(), custom.pricing))
+  assert.equal(custom.reconcile.ledgerCostCNY, noParams.reconcile.ledgerCostCNY)   // 台账一侧与单价无关
+  // token 用量不受单价影响
+  assert.equal(custom.session.uncached, noParams.session.uncached)
+  assert.equal(custom.today.uncached, noParams.today.uncached)
+  // rankSessionCosts 的第三参就是这份单价：同一个会话换个价，钱跟着变
+  const one = [{ sessionId: 'aaaaaaaa-1', title: '一条会话', uncached: 1000000, cacheRead: 1000000, output: 1000000 }]
+  assert.deepEqual(h.rankSessionCosts(one, 5, custom.pricing), [
+    { sessionId: 'aaaaaaaa-1', title: '一条会话', costCNY: 10 },   // 2 + 3 + 5
+  ])
+
+  // 非法单价 → 与不带参数完全一致
+  const bad = h.costBody('cost-session-1', 7, at, { priceIn: 'nope' })
+  assert.equal(bad.pricing.source, 'default')
+  assert.equal(bad.today.costCNY, noParams.today.costCNY)
+  assert.equal(bad.week.costCNY, noParams.week.costCNY)
+  assert.equal(bad.session.costCNY, noParams.session.costCNY)
+  assert.deepEqual(bad.top, noParams.top)
+})
+
 /* ─── 交接落盘接口 ───────────────────────────────────────────────────── */
 
 test('宿主半：parseHandoffFilename —— 只接受纯文件名', () => {

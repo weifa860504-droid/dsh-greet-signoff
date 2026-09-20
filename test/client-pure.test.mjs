@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny', 'lastJumpRise', 'extractHandoffText', 'pickLeader', 'suggestBudget', 'percentile90', 'roundToStep', 'normalizePricing', 'pricingIsDefault']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -758,4 +758,133 @@ test('v1.18.0 实测速率：门槛放宽到 20 秒，采样不够时用轮次�
   assert.equal(t.rateFromJumps([base], [3000]), null)
   assert.equal(t.rateFromJumps(null, null), null)
   assert.equal(t.rateFromJumps([base, base + 30000], [0, 0]), null)
+})
+
+test('v1.19.0 上一轮涨幅：不足两次跃升不给数字，够两次就返回最近一次跃升的幅度', () => {
+  // 不足 2 次跃升 / 空账本：一律 null（第一次跃升只是建立基线，不是任何一轮的净增）
+  assert.equal(t.lastJumpRise(t.emptySampler()), null)
+  assert.equal(t.lastJumpRise({ jumps: [] }), null)
+  assert.equal(t.lastJumpRise({ jumps: [12000] }), null)
+  // 脏输入不炸
+  assert.equal(t.lastJumpRise(null), null)
+  assert.equal(t.lastJumpRise(undefined), null)
+  assert.equal(t.lastJumpRise('x'), null)
+  assert.equal(t.lastJumpRise({ jumps: 'x' }), null)
+  // ≥2 次跃升：返回最近一次跃升的幅度（= 上一轮涨了多少 tok）
+  assert.equal(t.lastJumpRise({ jumps: [9000, 31000] }), 31000)
+  assert.equal(t.lastJumpRise({ jumps: [1000, 2000, 248930] }), 248930)
+  // 重复值照旧返回最近一次；含 0 / 负数的脏账本不给假数字
+  assert.equal(t.lastJumpRise({ jumps: [7000, 7000] }), 7000)
+  assert.equal(t.lastJumpRise({ jumps: [0, 0] }), null)
+  assert.equal(t.lastJumpRise({ jumps: [5000, 0] }), null)
+  assert.equal(t.lastJumpRise({ jumps: [5000, -300] }), null)
+  // 界面用这个常量判断要不要给那一段标警示色
+  assert.equal(t.riseWarnTokens, 50000)
+})
+
+test('v1.19.0 交接摘要提取：两个标记之间才算，缺标 / 颠倒 / 太短都不算', () => {
+  const start = t.handoffMarkStart
+  const end = t.handoffMarkEnd
+  const body = '目标：给进度条加「上一轮涨幅」。\n已确认：宿主 POST /handoff 可落盘。'
+  // 正常：前后有废话、中间带换行，只取中间那段（首尾空白被清掉）
+  assert.equal(t.extractHandoffText('好的，摘要如下：\n' + start + '\n' + body + '\n' + end + '\n以上。'), body)
+  assert.equal(t.extractHandoffText(start + '  ' + body + '  ' + end), body)
+  // 缺一个标记 → 不给内容
+  assert.equal(t.extractHandoffText(start + '\n' + body), null)
+  assert.equal(t.extractHandoffText(body + '\n' + end), null)
+  // 顺序颠倒（结束标记在前）→ 不给内容
+  assert.equal(t.extractHandoffText(end + '\n' + body + '\n' + start), null)
+  // 中间是空的 / 只有空白 → 不给内容
+  assert.equal(t.extractHandoffText(start + end), null)
+  assert.equal(t.extractHandoffText(start + '   \n\t  ' + end), null)
+  // 内容不足 handoffMinChars（输入框里那句"要求"就是这种短片段）→ 不给内容
+  assert.equal(t.extractHandoffText(start + '短摘要' + end), null)
+  assert.equal(t.handoffMinChars, 32)
+  // 非字符串不炸
+  assert.equal(t.extractHandoffText(null), null)
+  assert.equal(t.extractHandoffText(123), null)
+  assert.equal(t.extractHandoffText(''), null)
+})
+
+test('v1.19.0 多标签互斥：锁为空 / 过期 / 是自己都由自己记账，别人的有效锁才让位', () => {
+  const ttl = t.tabLockTtlMs
+  const now = 1700000000000
+  assert.equal(ttl, 12000)
+  // 没锁 / 锁里没有 tabId → 自己上
+  assert.equal(t.pickLeader('tab-a', '', 0, now), 'self')
+  assert.equal(t.pickLeader('tab-a', null, null, now), 'self')
+  // 锁就是自己 → self
+  assert.equal(t.pickLeader('tab-a', 'tab-a', now - 5000, now), 'self')
+  // 别人持锁且没过期 → other（本标签只读显示，不写账本）
+  assert.equal(t.pickLeader('tab-a', 'tab-b', now - 5000, now), 'other')
+  assert.equal(t.pickLeader('tab-a', 'tab-b', now - (ttl - 1), now), 'other')
+  // 别人持锁但已过期（now - lockAt >= 12000）→ self
+  assert.equal(t.pickLeader('tab-a', 'tab-b', now - ttl, now), 'self')
+  assert.equal(t.pickLeader('tab-a', 'tab-b', now - 10 * ttl, now), 'self')
+  // lockAt 为 0（写坏的锁）、时间戳脏值 → self，不让插件瘫住
+  assert.equal(t.pickLeader('tab-a', 'tab-b', 0, now), 'self')
+  assert.equal(t.pickLeader('tab-a', 'tab-b', Number.NaN, now), 'self')
+  assert.equal(t.pickLeader('tab-a', 'tab-b', now - 5000, 0), 'self')
+  assert.equal(t.pickLeader('', 'tab-b', now - 5000, now), 'self')
+})
+
+test('v1.19.0 档位建议：样本不足不给建议，够 5 条就按 P90 给黄线/红线', () => {
+  // 样本不足 5 条 → null（宁可不说，也不拿两三条记录去猜）
+  assert.equal(t.suggestBudget([], 75000, 110000), null)
+  assert.equal(t.suggestBudget(null, 75000, 110000), null)
+  assert.equal(t.suggestBudget([{ tokens: 120000 }, { tokens: 90000 }], 75000, 110000), null)
+  // 5 条：P90 索引 = min(4, ceil(5*0.9)-1) = 4 → 最大值 200000
+  const five = [40000, 60000, 80000, 100000, 200000].map((n) => ({ tokens: n }))
+  const s = t.suggestBudget(five, 75000, 110000)
+  assert.ok(s !== null)
+  assert.equal(s.sampleCount, 5)
+  assert.equal(s.warn, 160000)      // 200000 * 0.8
+  assert.equal(s.critical, 240000)  // 200000 * 1.2
+  assert.ok(s.reason.includes('5 次'))
+  // 脏数据（null / 非数字 / NaN / 负数）一律不计入样本
+  const dirty = five.concat([null, { tokens: 'x' }, { tokens: Number.NaN }, { tokens: -5 }])
+  assert.equal(t.suggestBudget(dirty, 75000, 110000).sampleCount, 5)
+})
+
+test('v1.19.0 档位建议：极端值被夹在合理区间，红线一定大于黄线', () => {
+  const tiny = [1, 2, 3, 4, 5].map((n) => ({ tokens: n }))
+  const low = t.suggestBudget(tiny, 75000, 110000)
+  assert.equal(low.warn, 5000)
+  assert.equal(low.critical, 10000)
+  const huge = [1, 2, 3, 4, 5000000].map((n) => ({ tokens: n }))
+  const high = t.suggestBudget(huge, 75000, 110000)
+  assert.equal(high.warn, 900000)
+  assert.ok(high.critical > high.warn)
+  // 取整到 5000 的倍数
+  const odd = [1, 2, 3, 4, 133333].map((n) => ({ tokens: n }))
+  const mid = t.suggestBudget(odd, 75000, 110000)
+  assert.equal(mid.warn % 5000, 0)
+  assert.equal(mid.critical % 5000, 0)
+})
+
+test('v1.19.0 计价口径：非法值回落内置价，边界值照收，能识别"是否默认"', () => {
+  assert.deepEqual(t.priceDefault, { in: 1, cacheRead: 0.02, out: 4 })
+  assert.deepEqual(t.normalizePricing(null), { in: 1, cacheRead: 0.02, out: 4 })
+  assert.deepEqual(t.normalizePricing({ in: 2, cacheRead: 0.5, out: 8 }), { in: 2, cacheRead: 0.5, out: 8 })
+  // 负数 / 超过 1000 元每百万 / 非数字 → 回落内置
+  assert.equal(t.normalizePricing({ in: -1 }).in, 1)
+  assert.equal(t.normalizePricing({ in: 1001 }).in, 1)
+  assert.equal(t.normalizePricing({ in: 'x' }).in, 1)
+  assert.equal(t.normalizePricing({ out: Number.NaN }).out, 4)
+  // 边界值 0 与 1000 算合法（不做"最小值"限制，0 表示想按免费算）
+  assert.equal(t.normalizePriceValue(0, 9), 0)
+  assert.equal(t.normalizePriceValue(1000, 9), 1000)
+  assert.equal(t.normalizePriceValue(1000.5, 9), 9)
+  // 是否默认
+  assert.equal(t.pricingIsDefault(null), true)
+  assert.equal(t.pricingIsDefault({ in: 1, cacheRead: 0.02, out: 4 }), true)
+  assert.equal(t.pricingIsDefault({ in: 2, cacheRead: 0.02, out: 4 }), false)
+})
+
+test('v1.19.0 源码契约：涨幅读数 / 交接落盘 / 多标签锁 / 数据源提示 / 计价都在', () => {
+  for (const needle of ['gs-dock-rise', 'gs-dock-rise-warn', 'HANDOFF_MARK_START', 'gs.signoff.lock.', 'sourceNote', 'budgetSuggest', 'collectPeakSamples', 'priceIn=']) {
+    assert.ok(SOURCE.includes(needle), `缺 ${needle}`)
+  }
+  assert.ok(SOURCE.includes('normalizePricing(uiState.pricing)'), 'fetchCostInfo 必须用设置里的单价')
+  assert.ok(SOURCE.includes('priceDefault: PRICE_DEFAULT'), '__test 必须暴露内置单价')
 })

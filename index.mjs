@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.18.0'
+const HOST_VERSION = '1.19.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -102,6 +102,14 @@ const USAGE_LEDGER_PATH = join(DSH_HOME, 'dsh-usage', 'usage-ledger.json')
  * 实测与台账自带的 cost 字段一致（2026-09-15/17/19/20 四天误差 < 1e-5 元）。
  */
 const COST_UNIT = { uncachedPerM: 1, cacheReadPerM: 0.02, outputPerM: 4 }
+/**
+ * 单价可配置（元/百万 token）的夹取范围与查询参数名。
+ * 允许外部把 DSH 调价后的单价从 URL 传进来（`?priceIn=&priceCache=&priceOut=`），
+ * 一个都不传时行为与以前完全一致（一直用 COST_UNIT）。
+ */
+const COST_PRICE_MIN = 0
+const COST_PRICE_MAX = 1000
+const PRICE_PARAM_KEYS = ['priceIn', 'priceCache', 'priceOut']
 /** 上下文明细里每个片段分类的中文可读名；未知分类直接用原始 key 当标签。 */
 const PART_LABELS = {
   system: '系统提示词',
@@ -1040,6 +1048,73 @@ function parseContextTimeline(doc, sessionId, reason) {
 }
 
 /**
+ * 解析三个可能的自定义单价（元/百万 token）。
+ * 每个字段独立判定：能解析成有限数字且落在 0~1000 就采纳，否则回落到内置默认价。
+ * 一个都没采纳时 source 为 "default"（缺省请求走的就是这条路，行为与以前完全一致）。
+ * @param {unknown} raw 形如 `{priceIn, priceCache, priceOut}` 的原始值（字符串/数字混合）。
+ * @returns {{in:number, cacheRead:number, out:number, source:'custom'|'default'}} 本次生效的单价。
+ */
+function resolvePricing(raw) {
+  const src = raw !== null && typeof raw === 'object' ? raw : {}
+  const inPrice = parsePriceParam(src.priceIn, COST_UNIT.uncachedPerM)
+  const cachePrice = parsePriceParam(src.priceCache, COST_UNIT.cacheReadPerM)
+  const outPrice = parsePriceParam(src.priceOut, COST_UNIT.outputPerM)
+  return {
+    in: inPrice,
+    cacheRead: cachePrice,
+    out: outPrice,
+    source: inPrice !== COST_UNIT.uncachedPerM
+      || cachePrice !== COST_UNIT.cacheReadPerM
+      || outPrice !== COST_UNIT.outputPerM ? 'custom' : 'default',
+  }
+}
+
+/** 单个单价参数：不是有效数字（或越界）就给内置默认值。 */
+function parsePriceParam(value, fallback) {
+  if (typeof value !== 'string' && typeof value !== 'number') return fallback
+  const text = typeof value === 'string' ? value.trim() : value
+  if (text === '') return fallback
+  // 注意别用裸 Number()：Number([]) = 0、Number(true) = 1，会把脏数据当成合法价
+  const num = typeof text === 'number' ? text : Number(text)
+  if (!Number.isFinite(num) || num < COST_PRICE_MIN || num > COST_PRICE_MAX) return fallback
+  return num
+}
+
+/**
+ * 按给定单价算一笔钱（元）；不传单价就是内置价（老调用点的行为不变）。
+ * @param {number} uncached 未命中输入 token。
+ * @param {number} cacheRead 缓存命中输入 token。
+ * @param {number} output 输出 token。
+ * @param {{in:number, cacheRead:number, out:number}} [pricing] 本次生效的单价。
+ * @returns {number} 保留 4 位小数的金额（元）。
+ */
+function costCNYWith(uncached, cacheRead, output, pricing) {
+  const unit = pricing !== null && typeof pricing === 'object' ? pricing : null
+  const inPerM = unit === null ? COST_UNIT.uncachedPerM : numOr0(unit.in)
+  const cachePerM = unit === null ? COST_UNIT.cacheReadPerM : numOr0(unit.cacheRead)
+  const outPerM = unit === null ? COST_UNIT.outputPerM : numOr0(unit.out)
+  const raw = (numOr0(uncached) * inPerM
+    + numOr0(cacheRead) * cachePerM
+    + numOr0(output) * outPerM) / 1000000
+  return round4(raw)
+}
+
+/**
+ * 对账：用「本次生效单价」算出来的钱 vs 台账自带的 ledgerCostCNY。
+ * gapRatio = |computed - ledger| / max(ledger, 极小值)；台账为 0（或非正）时给 0，绝不除零。
+ * @param {number} computedCNY 本次生效单价算出来的金额（元）。
+ * @param {number} ledgerCNY 台账自带的 cost（元）。
+ * @returns {{computedCNY:number, ledgerCostCNY:number, gapRatio:number}} 对账信息。
+ */
+function reconcileGap(computedCNY, ledgerCNY) {
+  const computed = round4(numOr0(computedCNY))
+  const ledger = round4(numOr0(ledgerCNY))
+  const base = Math.max(ledger, 0.000001)
+  const gapRatio = ledger > 0 ? round4(Math.abs(computed - ledger) / base) : 0
+  return { computedCNY: computed, ledgerCostCNY: ledger, gapRatio }
+}
+
+/**
  * 单会话成本（元）：未命中输入 1 / 缓存命中输入 0.02 / 输出 4（元每百万 token）。
  * @param {number} uncached 未命中输入 token。
  * @param {number} cacheRead 缓存命中输入 token。
@@ -1047,10 +1122,7 @@ function parseContextTimeline(doc, sessionId, reason) {
  * @returns {number} 保留 4 位小数的金额（元）。
  */
 function costCNYOf(uncached, cacheRead, output) {
-  const raw = (numOr0(uncached) * COST_UNIT.uncachedPerM
-    + numOr0(cacheRead) * COST_UNIT.cacheReadPerM
-    + numOr0(output) * COST_UNIT.outputPerM) / 1000000
-  return round4(raw)
+  return costCNYWith(uncached, cacheRead, output, null)
 }
 
 /**
@@ -1060,10 +1132,11 @@ function costCNYOf(uncached, cacheRead, output) {
  * 取不到时回落到 `tokenUsage.val.totals`（{uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}）。
  *
  * @param {unknown} doc 解析后的投影 JSON。
+ * @param {{in:number, cacheRead:number, out:number}} [pricing] 本次生效的单价（缺省=内置价）。
  * @returns {{uncached:number, cacheRead:number, output:number, cacheWrite:number, costCNY:number,
  *   rounds:number, turns:number, title:string, models:string[]}} 单会话用量。
  */
-function parseSessionCost(doc) {
+function parseSessionCost(doc, pricing) {
   const empty = {
     uncached: 0, cacheRead: 0, output: 0, cacheWrite: 0, costCNY: 0,
     rounds: 0, turns: 0, title: '', models: [],
@@ -1110,7 +1183,7 @@ function parseSessionCost(doc) {
     cacheRead,
     output,
     cacheWrite,
-    costCNY: costCNYOf(uncached, cacheRead, output),
+    costCNY: costCNYWith(uncached, cacheRead, output, pricing),
     rounds,
     turns: numOr0(stats.turns),
     title: typeof titleValue === 'string' ? titleValue.trim() : '',
@@ -1122,15 +1195,16 @@ function parseSessionCost(doc) {
  * 最贵会话排行：按 costCNY 降序取前 max 条；没有标题时给 sessionId 前 8 位。
  * @param {Array<{sessionId:string, title?:string, uncached?:number, cacheRead?:number, output?:number}>} list 全部会话用量。
  * @param {number} [max] 取几条。
+ * @param {{in:number, cacheRead:number, out:number}} [pricing] 本次生效的单价（缺省=内置价）。
  * @returns {Array<{sessionId:string, title:string, costCNY:number}>} 排行。
  */
-function rankSessionCosts(list, max) {
+function rankSessionCosts(list, max, pricing) {
   const limit = clampInt(max, 1, 50, TOP_MAX)
   const items = Array.isArray(list) ? list : []
   return items
     .filter((item) => item !== null && typeof item === 'object' && typeof item.sessionId === 'string' && item.sessionId.length > 0)
     .map((item) => {
-      const cost = costCNYOf(item.uncached, item.cacheRead, item.output)
+      const cost = costCNYWith(item.uncached, item.cacheRead, item.output, pricing)
       const title = typeof item.title === 'string' && item.title.trim().length > 0
         ? item.title.trim()
         : item.sessionId.slice(0, 8)
@@ -1174,10 +1248,36 @@ function sumLedgerDay(day) {
   return out
 }
 
-/** 原始累计 → 对外的展示结构（含按常量算出的 costCNY）。 */
-function finishDayTotals(raw) {
+/**
+ * 对账用的台账金额：台账覆盖的天数 ≥ 扫描会话的覆盖范围时用整段（week），
+ * 否则退回到"今天"这一天，避免拿"台账近 3 天"去比"全部会话"这种口径错位。
+ * @param {unknown} ledger 台账。
+ * @param {{today:object, week:object}} aggregate 已经算好的聚合。
+ * @param {number} span 台账统计的天数。
+ * @returns {number} 台账自带的 cost（元）。
+ */
+function reconcileLedgerCNY(ledger, aggregate, span) {
+  const days = ledger !== null && typeof ledger === 'object' && ledger.days !== null && typeof ledger.days === 'object'
+    ? Object.keys(ledger.days).length
+    : 0
+  return days >= span ? aggregate.week.ledgerCostCNY : aggregate.today.ledgerCostCNY
+}
+
+/** 把扫描到的全部会话按本次生效单价加总（对账的"算出金额"一侧）。 */
+function sumSessionCosts(list, pricing) {
+  const items = Array.isArray(list) ? list : []
+  let total = 0
+  for (const item of items) {
+    if (item === null || typeof item !== 'object') continue
+    total += costCNYWith(item.uncached, item.cacheRead, item.output, pricing)
+  }
+  return round4(total)
+}
+
+/** 原始累计 → 对外的展示结构（含按本次生效单价算出的 costCNY）。 */
+function finishDayTotals(raw, pricing) {
   return {
-    costCNY: costCNYOf(raw.uncached, raw.cacheRead, raw.output),
+    costCNY: costCNYWith(raw.uncached, raw.cacheRead, raw.output, pricing),
     uncached: raw.uncached,
     cacheRead: raw.cacheRead,
     output: raw.output,
@@ -1200,9 +1300,10 @@ function dayKeyOf(date) {
  * @param {unknown} ledger 台账 JSON。
  * @param {number} days 统计最近几天（1~90）。
  * @param {Date|number} now 当前时间。
+ * @param {{in:number, cacheRead:number, out:number}} [pricing] 本次生效的单价（缺省=内置价）。
  * @returns {{today:object, week:object}} 聚合结果。
  */
-function aggregateLedger(ledger, days, now) {
+function aggregateLedger(ledger, days, now, pricing) {
   const at = now instanceof Date ? now : new Date(numOr0(now) > 0 ? now : Date.now())
   const span = clampInt(days, 1, 90, 7)
   const todayKey = dayKeyOf(at)
@@ -1226,10 +1327,10 @@ function aggregateLedger(ledger, days, now) {
   }
   const start = new Date(at.getFullYear(), at.getMonth(), at.getDate() - (span - 1))
   return {
-    today: Object.assign({ date: todayKey }, finishDayTotals(todayRaw ?? emptyDayTotals())),
+    today: Object.assign({ date: todayKey }, finishDayTotals(todayRaw ?? emptyDayTotals(), pricing)),
     week: Object.assign(
       { days: span, from: dayKeyOf(start), to: todayKey },
-      finishDayTotals(weekRaw),
+      finishDayTotals(weekRaw, pricing),
     ),
   }
 }
@@ -1385,21 +1486,27 @@ function contextBody(wanted) {
  * 组装花费接口的响应体。
  * 台账只按「日期 → provider → model」累计，**没有会话维度**，所以：
  *   today / week ← 台账；session / top ← 会话投影（每会话的 cost + 标题）。
+ * 单价可以按请求覆盖（`?priceIn=&priceCache=&priceOut=`，元/百万 token）：
+ * session / today / week / top 四处金额一律用**本次生效的同一份单价**算，不混用；
+ * 同时用 pricing 说明这次用的是自定义价还是内置价，用 reconcile 与台账自带的 cost 对账
+ * （computedCNY = 扫描到的全部会话按本次生效单价算出来的总金额）。
  * @param {string|undefined} wanted 会话 id（缺省时用当前会话）。
  * @param {number} days 最近几天。
  * @param {number} now 当前时间戳。
+ * @param {unknown} [rawPricing] 原始单价参数（`{priceIn, priceCache, priceOut}`，可选）。
  * @returns {object} 响应体（不含 ok）。
  */
-function costBody(wanted, days, now) {
+function costBody(wanted, days, now, rawPricing) {
   const span = clampInt(days, 1, 90, 7)
   const at = new Date(numOr0(now) > 0 ? now : Date.now())
   const notes = []
+  const pricing = resolvePricing(rawPricing)
 
   const ledger = readJsonFile(USAGE_LEDGER_PATH)
   const ledgerOk = ledger !== null && typeof ledger === 'object'
     && ledger.days !== null && typeof ledger.days === 'object'
   if (!ledgerOk) notes.push(`用量台账读不出来或结构不认识（${USAGE_LEDGER_PATH}），today/week 按 0 计`)
-  const aggregate = aggregateLedger(ledgerOk ? ledger : null, span, at)
+  const aggregate = aggregateLedger(ledgerOk ? ledger : null, span, at, pricing)
   if (span !== 7) notes.push(`week 统计的是最近 ${span} 天`)
 
   const info = resolveSessionInfo(wanted)
@@ -1415,21 +1522,33 @@ function costBody(wanted, days, now) {
     if (doc === null) {
       notes.push('本条会话的 token 明细拿不到（投影文件缺失或损坏），session 按 0 计')
     } else {
-      session = parseSessionCost(doc)
+      session = parseSessionCost(doc, pricing)
       sessionSource = 'projcache'
     }
   } else {
     notes.push('没有会话 id：session 一项按 0 计（地址可加 ?sessionId=<id>）')
   }
 
-  const top = rankSessionCosts(scanSessionCosts(), TOP_MAX)
+  const scanned = scanSessionCosts()
+  const top = rankSessionCosts(scanned, TOP_MAX, pricing)
   if (top.length === 0) notes.push('没有扫描到任何会话用量，top 为空')
+
+  const pricingOut = {
+    in: numOr0(pricing.in),
+    cacheRead: numOr0(pricing.cacheRead),
+    out: numOr0(pricing.out),
+    source: pricing.source,
+  }
+  // 对账：把"扫描到的全部会话 token"按本次生效单价算出来的钱，跟台账自带的 cost 比一比。
+  // 两边口径都覆盖全部会话（台账没有会话维度），差额比例才有意义。
+  const reconcile = reconcileGap(sumSessionCosts(scanned, pricing), reconcileLedgerCNY(ledger, aggregate, span))
 
   return {
     sessionId: id,
     source: ledgerOk ? 'ledger' : 'none',
     sessionSource,
     unit: Object.assign({}, COST_UNIT),
+    pricing: pricingOut,
     session: {
       uncached: session.uncached,
       cacheRead: session.cacheRead,
@@ -1444,6 +1563,7 @@ function costBody(wanted, days, now) {
     today: aggregate.today,
     week: aggregate.week,
     top,
+    reconcile,
     note: notes.join('；'),
   }
 }
@@ -1613,12 +1733,26 @@ function handleApi(req, res) {
   }
   // /api/greet-signoff/cost → 本条会话花了多少 / 今天与最近几天花了多少 / 最贵的会话是哪些
   // 可带 ?sessionId=<id>&days=7（days 夹在 1~90）。任何数据缺失都只影响对应字段，接口本身始终 200。
+  // v1.19.0 起还可带 ?priceIn=&priceCache=&priceOut=（元/百万 token，夹在 0~1000，非法/缺失回落内置默认价）：
+  // 三处金额一律用本次生效的同一份单价算，响应里给 pricing 与 reconcile 便于核对。
   if (pathname === `${API_PATH}/cost`) {
     const rawUrl = String(req.url ?? '')
     const idMatch = /[?&]sessionId=([^&]*)/.exec(rawUrl)
     const wanted = idMatch === null ? undefined : decodeURIComponent(idMatch[1])
     const daysMatch = /[?&]days=(\d{1,3})/.exec(rawUrl)
-    sendJson(res, 200, Object.assign({ ok: true, hostVersion: HOST_VERSION }, costBody(wanted, daysMatch === null ? 7 : Number(daysMatch[1]), Date.now())))
+    const rawPricing = {}
+    const priceRe = new RegExp(`[?&](${PRICE_PARAM_KEYS.join('|')})=([^&]*)`, 'g')
+    let priceMatch = priceRe.exec(rawUrl)
+    while (priceMatch !== null) {
+      rawPricing[priceMatch[1]] = decodeURIComponent(priceMatch[2])
+      priceMatch = priceRe.exec(rawUrl)
+    }
+    sendJson(res, 200, Object.assign({ ok: true, hostVersion: HOST_VERSION }, costBody(
+      wanted,
+      daysMatch === null ? 7 : Number(daysMatch[1]),
+      Date.now(),
+      rawPricing,
+    )))
     return
   }
   // /api/greet-signoff/handoff → 把"换会话交接摘要"落盘成一个文件（本插件唯一的写操作）
@@ -1717,6 +1851,11 @@ export const __test = {
   aggregateLedger,
   sumLedgerDay,
   costCNYOf,
+  costCNYWith,
+  resolvePricing,
+  reconcileGap,
+  sumSessionCosts,
+  scanSessionCosts,
   round4,
   dayKeyOf,
   parseHandoffFilename,

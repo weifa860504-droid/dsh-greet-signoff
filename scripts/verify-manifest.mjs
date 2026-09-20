@@ -91,14 +91,17 @@ function checkPatch() {
   notes.push('组合层 patch：通过')
 }
 
-/** 体积提示：client.js 是手写单文件，超过 340KB 通常意味着塞进了不该塞的东西。
- * v1.18.0 起阈值由 320KB 抬到 340KB：这一版加的是核心功能（活跃时长记账 + 采样账本按会话落盘
- * + 档位菜单去重），不是长尾选项；当前约 329KB，仍留 ~11KB 余量当门禁。 */
+/** 体积提示：client.js 是手写单文件，超过阈值通常意味着塞进了不该塞的东西。
+ * v1.18.0：320KB → 340KB（活跃时长记账 + 采样账本按会话落盘 + 档位菜单去重）。
+ * v1.19.0：340KB → 380KB。理由：这一版加的全是核心功能（上一轮涨幅读数、交接摘要改走宿主
+ * 接口落盘、页面隐藏时停心跳、多标签时长互斥、版本错配提示、上下文构成与花费明细），不是长尾
+ * 选项；实测长尾表（40 种动效 + 32 个小车图标 + 37 套配色 + 形状/填充/阴影 + 风格预设）全部
+ * 加起来只占 client.js 的 5.9%，所以门禁继续只用来防"长尾膨胀"这一件事。 */
 function reportSizes() {
   for (const file of ['client.js', 'index.mjs']) {
     const size = statSync(join(ROOT, file)).size
     notes.push(`${file}: ${(size / 1024).toFixed(1)} KB`)
-    if (file === 'client.js' && size > 340 * 1024) problems.push(`client.js 已经 ${(size / 1024).toFixed(0)} KB，偏大`)
+    if (file === 'client.js' && size > 380 * 1024) problems.push(`client.js 已经 ${(size / 1024).toFixed(0)} KB，偏大`)
   }
 }
 

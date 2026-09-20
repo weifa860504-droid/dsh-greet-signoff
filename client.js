@@ -426,7 +426,7 @@ var LEGACY_LINES_MAX = 8;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.18.0";
+var CLIENT_VERSION = "1.19.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -890,6 +890,12 @@ function css() {
     ".gs-dock-time{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}",
     ".gs-dock-time b{font-weight:600;color:var(--dsw-alias-label-secondary)}",
     ".gs-dock-time .gs-clock{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
+    /* v1.19.0：时间行的「上一轮 ↑X.X 万」涨幅段（≥5 万标警示色，深色档换亮琥珀）+ 版本错配小字 */
+    ".gs-dock-rise{font-variant-numeric:tabular-nums}",
+    ".gs-dock-rise-warn{color:#b45309;font-weight:600}",
+    'html[data-gs-dark="1"] .gs-dock-rise-warn{color:#fbbf24}',
+    ".gs-dock-note-warn{color:#b45309}",
+    'html[data-gs-dark="1"] .gs-dock-note-warn{color:#fbbf24}',
     /* 预算模式行：🎯 小胶囊（点一下切档，只影响本会话）+ 一句提示 */
     ".gs-dock-mode{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
     ".gs-mode-pill{padding:1px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}",
@@ -1360,11 +1366,38 @@ var UI_DEFAULTS = {
   autoSuggest: true,       // 到线时按客观计数提示"建议切大任务/可以降档"
   notifyOnLine: false,     // 到线时发浏览器系统通知（要用户授权，故默认关）
   advOptions: false,       // 长尾选项（40 动效 / 37 配色 / 30 车型）默认收起来
-  showDiag: false          // 诊断分区只在主动打开时出现
+  showDiag: false,         // 诊断分区只在主动打开时出现
+  // 计价口径（v1.19.0）：元 / 百万 token。宿主半按这三个数把用量换算成钱；改完重新拉一次花费即生效。
+  pricing: { in: 1, cacheRead: 0.02, out: 4 }
 };
+
+/** 内置计价口径（元 / 百万 token）：与宿主半的默认单价一致，用作回落基准。 */
+var PRICE_DEFAULT = { in: 1, cacheRead: 0.02, out: 4 };
+
+/** 洗一个单价：非数字、负数、超过 1000 元/百万 一律回落内置值（填错最多是没生效，不会把花费算成天文数字）。 */
+function normalizePriceValue(value, fallback) {
+  var num = typeof value === "number" ? value : Number(value);
+  if (!isFinite(num) || num < 0 || num > 1000) return fallback;
+  return num;
+}
+
+/** 把设置页存的计价口径洗净成 {in, cacheRead, out}。 */
+function normalizePricing(raw) {
+  var src = raw !== null && typeof raw === "object" ? raw : {};
+  return {
+    in: normalizePriceValue(src.in, PRICE_DEFAULT.in),
+    cacheRead: normalizePriceValue(src.cacheRead, PRICE_DEFAULT.cacheRead),
+    out: normalizePriceValue(src.out, PRICE_DEFAULT.out)
+  };
+}
+
+/** 计价口径是否与内置默认完全一致（设置页显示"内置 / 自定义"用）。 */
+function pricingIsDefault(pricing) {
+  var p = normalizePricing(pricing);
+  return p.in === PRICE_DEFAULT.in && p.cacheRead === PRICE_DEFAULT.cacheRead && p.out === PRICE_DEFAULT.out;
+}
 /**
  * 预算模式（=「大任务模式」）：三档预设 + 自定义，只决定黄线/红线画在哪。
- *
  * 为什么要有它：日常小任务 7.5 万 tok 就该换会话，但一次大改造/长调研动辄十几万 tok，
  * 拿日常线去卡会一直报红，提醒就变成了噪音。所以给一个"一键抬线 / 一键降线"的档位：
  * ① 全局默认档存在 gs.signoff.ui.budgetMode（设置页里选）；
@@ -3232,11 +3265,56 @@ function Editor() {
         numInput(ui.budgetCritical, 10000, 999000, 5000, function (value) { setUiPrefs({ budgetCritical: Math.round(value) }); }),
         React.createElement("span", { className: "gs-label gs-unit" }, "tok 必须换")
       ), "budgetCritical"),
+      // ── 计价口径（v1.19.0）：DSH 调价后不用等插件更新，改这三个数就行 ──────────
+      cell("未命中输入", React.createElement("span", { className: "gs-cellgroup" },
+        numInput(normalizePricing(ui.pricing).in, 0, 1000, 0.1, function (value) {
+          setUiPrefs({ pricing: Object.assign({}, normalizePricing(ui.pricing), { in: value }) });
+        }),
+        React.createElement("span", { className: "gs-label gs-unit" }, "元/百万")
+      ), "priceIn"),
+      cell("缓存命中输入", React.createElement("span", { className: "gs-cellgroup" },
+        numInput(normalizePricing(ui.pricing).cacheRead, 0, 1000, 0.01, function (value) {
+          setUiPrefs({ pricing: Object.assign({}, normalizePricing(ui.pricing), { cacheRead: value }) });
+        }),
+        React.createElement("span", { className: "gs-label gs-unit" }, "元/百万")
+      ), "priceCache"),
+      cell("输出", React.createElement("span", { className: "gs-cellgroup" },
+        numInput(normalizePricing(ui.pricing).out, 0, 1000, 0.5, function (value) {
+          setUiPrefs({ pricing: Object.assign({}, normalizePricing(ui.pricing), { out: value }) });
+        }),
+        React.createElement("span", { className: "gs-label gs-unit" }, "元/百万")
+      ), "priceOut"),
+      React.createElement("div", { className: "gs-cell gs-cell-wide", key: "pricingHint" },
+        React.createElement("span", { className: "gs-hint" },
+          "计价口径：进度条上那个「≈¥」= 三个单价 × 对应的 token 用量（默认 1 / 0.02 / 4 元每百万，"
+          + "是本机台账反推出来的）。DSH 若调价，改这里即可，不用等插件更新。当前："
+          + (pricingIsDefault(ui.pricing) ? "内置默认" : "自定义") + "。"),
+        React.createElement("button", {
+          type: "button", className: "gs-btn",
+          onClick: function () { setUiPrefs({ pricing: { in: PRICE_DEFAULT.in, cacheRead: PRICE_DEFAULT.cacheRead, out: PRICE_DEFAULT.out } }); }
+        }, "恢复默认")
+      ),
       React.createElement("div", { className: "gs-cell gs-cell-wide", key: "meterHint" },
         React.createElement("span", { className: "gs-hint" },
           "预算口径下 100% = 你当前档位的红线（默认「日常」：7.5 万 tok 变黄、11 万 tok 整条变红），条下弹红底大字「🚨 该开新会话了」，"
           + "浏览器标签页标题也会加 🚨 —— 不用盯着数字看。超了会显示「超 N 倍」。想回到以前那种「占模型窗口 24%」就切上面的口径。")
       ),
+      // v1.19.0：按历史峰值给建议（只提示，必须点「采纳」才会真的改）。样本不足 5 条就整行不出现。
+      (function () {
+        var suggestion = suggestBudget(collectPeakSamples(), ui.budgetWarn, ui.budgetCritical);
+        if (suggestion === null) return null;
+        return React.createElement("div", { className: "gs-cell gs-cell-wide", key: "budgetSuggest" },
+          React.createElement("span", { className: "gs-label" }, "建议档位"),
+          React.createElement("span", { className: "gs-hint" },
+            "💡 " + suggestion.reason + " → 建议黄线 " + formatWan(suggestion.warn) + " / 红线 " + formatWan(suggestion.critical) + "。"),
+          React.createElement("button", {
+            type: "button", className: "gs-btn",
+            onClick: function () {
+              setUiPrefs({ budgetWarn: suggestion.warn, budgetCritical: suggestion.critical, budgetMode: "custom" });
+            }
+          }, "采纳（切到自定义档）")
+        );
+      })(),
       // 小车：默认只列 7 个常见车型，其余收进「显示全部」（v1.14.0）。
       selectCell("小车", (function () {
         var all = BAR_MARKERS.map(function (item) {
@@ -3294,7 +3372,8 @@ function Editor() {
     : "今天 ≈" + formatCny(costInfo.today !== null && costInfo.today !== undefined ? costInfo.today.costCNY : 0)
       + " · 近 " + String(costInfo.week !== null && costInfo.week !== undefined && typeof costInfo.week.days === "number" ? costInfo.week.days : 7) + " 天 ≈"
       + formatCny(costInfo.week !== null && costInfo.week !== undefined ? costInfo.week.costCNY : 0)
-      + " · 单价：未命中 ¥1/M、缓存命中 ¥0.02/M、输出 ¥4/M。"
+      + " · 单价：未命中 ¥" + String(normalizePricing(ui.pricing).in) + "/M、缓存命中 ¥" + String(normalizePricing(ui.pricing).cacheRead) + "/M、输出 ¥" + String(normalizePricing(ui.pricing).out) + "/M"
+      + (pricingIsDefault(ui.pricing) ? "（内置默认）" : "（自定义，可在上面「计价口径」里改）") + "。"
       + "留意输出价是缓存读的 200 倍 —— 少让我啰嗦，比省那点上下文更省钱。";
   var topList = costInfo !== null && costInfo !== undefined && Array.isArray(costInfo.top) ? costInfo.top : [];
   var topHint = topList.length === 0 ? ""
@@ -3311,6 +3390,21 @@ function Editor() {
         React.createElement("span", { className: "gs-label" }, "最贵会话"),
         React.createElement("span", { className: "gs-hint" }, topHint)
       ),
+      // v1.19.0：与台账对账 —— 单价若已过时（DSH 调价），这里会明显对不上，提醒去改计价口径。
+      (costInfo === null || costInfo === undefined || costInfo.reconcile === null || costInfo.reconcile === undefined
+        ? null
+        : React.createElement("div", { className: "gs-cell gs-cell-wide", key: "costReconcile" },
+            React.createElement("span", { className: "gs-label" }, "与台账对账"),
+            React.createElement("span", {
+              className: costInfo.reconcile.gapRatio > 0.2 ? "gs-hint gs-dock-note-warn" : "gs-hint"
+            },
+              "本次算得 " + formatCny(costInfo.reconcile.computedCNY)
+              + " · 台账 " + formatCny(costInfo.reconcile.ledgerCostCNY)
+              + " · 差 " + String(Math.round((costInfo.reconcile.gapRatio || 0) * 1000) / 10) + "%"
+              + (costInfo.reconcile.gapRatio > 0.2
+                ? "（差得偏多：DSH 可能调过价，改上面「计价口径」即可）"
+                : "（差值是投影扫描与台账聚合的口径差异，正常）"))
+          )),
       selectCell("显示花费", [
         { value: "on", label: "进度条那行写 ≈¥…" },
         { value: "off", label: "不显示" }
@@ -3578,6 +3672,26 @@ function averageTurnMs(times) {
   return sum / count;
 }
 
+/** 「上一轮 ↑X.X 万」的警示线：单轮涨这么多 tok 就标红。 */
+var RISE_WARN_TOKENS = 50000;
+
+/**
+ * 上一轮涨了多少（纯函数）：取账本里最近一次跃升的幅度（每次跃升=一轮回复吃掉的 token）。
+ * 账本不足两次跃升（第一次只是建立基线）或数值脏时返回 null，宁可不出数也不给假数字。
+ * @param {Object} sampler 采样账本。
+ * @returns {number|null} tok 数。
+ */
+function lastJumpRise(sampler) {
+  if (sampler === null || sampler === undefined || typeof sampler !== "object") return null;
+  var jumps = Array.isArray(sampler.jumps) ? sampler.jumps : [];
+  if (jumps.length < 2) return null;
+  var last = jumps[jumps.length - 1];
+  var prev = jumps[jumps.length - 2];
+  if (typeof last !== "number" || !isFinite(last) || last <= 0) return null;
+  if (typeof prev !== "number" || !isFinite(prev) || prev <= 0) return null;
+  return last;
+}
+
 /* ─── 会话开始时间：宿主半给（浏览器半看不到 session.header.createdAt） ──── */
 
 var SESSION_API = API + "/session";
@@ -3693,6 +3807,93 @@ function writeActiveRecord(sessionId, totalMs, lastAt) {
   try { window.localStorage.setItem(ACTIVE_KEY_PREFIX + sessionId, JSON.stringify({ totalMs: total, lastAt: last })); } catch (error) { /* 隐私模式：忽略 */ }
 }
 
+/* v1.19.0 多标签账本互斥：一个会话开两个标签时只让一个标签写账本（否则时长/采样翻倍）。
+   抢锁主逻辑是 localStorage（gs.signoff.lock.<id> = { tabId, at }），BroadcastChannel 只做辅助同步。 */
+var LOCK_KEY_PREFIX = "gs.signoff.lock.";
+/** 锁有效期：超过就当上一个标签没了，别的标签可以接手。 */
+var LOCK_TTL_MS = 12000;
+
+/** 生成标签 id（每标签一次，刷新换新的）。 */
+function randomTabId() {
+  var rand = "";
+  try { rand = Math.random().toString(36).slice(2, 10); } catch (error) { rand = ""; }
+  return "tab-" + Date.now().toString(36) + "-" + rand;
+}
+var MY_TAB_ID = randomTabId();
+/** 别的标签广播过来的锁（比 localStorage 里的新就用它）。 */
+var peerLocks = {};
+var lockChannel = null;
+var lockChannelTried = false;
+
+/** 惰性建 BroadcastChannel（浏览器不支持就当没有，不影响功能）。 */
+function lockChannelOf() {
+  if (lockChannelTried) return lockChannel;
+  lockChannelTried = true;
+  try {
+    if (typeof BroadcastChannel === "function") {
+      lockChannel = new BroadcastChannel("gs.signoff.lock");
+      lockChannel.onmessage = function (event) {
+        var data = event === null || event === undefined ? null : event.data;
+        if (data === null || typeof data !== "object" || data.type !== "lock") return;
+        if (typeof data.sessionId !== "string" || data.sessionId.length === 0) return;
+        if (typeof data.tabId !== "string" || data.tabId.length === 0) return;
+        var at = typeof data.at === "number" && isFinite(data.at) ? data.at : 0;
+        var seen = peerLocks[data.sessionId];
+        if (seen === undefined || at >= seen.at) peerLocks[data.sessionId] = { tabId: data.tabId, at: at };
+      };
+    }
+  } catch (error) { lockChannel = null; }
+  return lockChannel;
+}
+
+/**
+ * 谁该记账（纯函数）：锁为空 / 过期（now - lockAt >= 12000）/ 锁是自己 → "self"；别人且未过期 → "other"。
+ * 脏时间戳一律当"没锁"（自己上，功能不瘫）。
+ * @param {string} myTabId 本标签 id。
+ * @param {string} lockTabId 锁里的标签 id（空串=没锁）。
+ * @param {number} lockAt 锁写入时刻。
+ * @param {number} now 现在。
+ * @returns {string} "self" | "other"。
+ */
+function pickLeader(myTabId, lockTabId, lockAt, now) {
+  if (typeof myTabId !== "string" || myTabId.length === 0) return "self";
+  if (typeof lockTabId !== "string" || lockTabId.length === 0) return "self";
+  if (lockTabId === myTabId) return "self";
+  if (typeof lockAt !== "number" || !isFinite(lockAt) || lockAt <= 0) return "self";
+  if (typeof now !== "number" || !isFinite(now) || now <= 0) return "self";
+  return now - lockAt >= LOCK_TTL_MS ? "self" : "other";
+}
+
+/** 读锁：localStorage 为主，广播过来的更近期就用它。 */
+function readTabLock(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+  var stored = null;
+  try {
+    var raw = window.localStorage.getItem(LOCK_KEY_PREFIX + sessionId);
+    var parsed = raw === null ? null : JSON.parse(raw);
+    if (parsed !== null && typeof parsed === "object" && typeof parsed.tabId === "string" && parsed.tabId.length > 0) {
+      stored = { tabId: parsed.tabId, at: typeof parsed.at === "number" && isFinite(parsed.at) ? parsed.at : 0 };
+    }
+  } catch (error) { stored = null; }
+  var peer = peerLocks[sessionId];
+  if (peer !== undefined && peer !== null && (stored === null || peer.at > stored.at)) return { tabId: peer.tabId, at: peer.at };
+  return stored;
+}
+
+/** 心跳开始时的"谁记账"：抢到就写锁 + 广播并返回 true；没抢到返回 false（只读显示，不写账本）。 */
+function heartbeatIsLeader(sessionId, now) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return true;
+  var stamp = typeof now === "number" && isFinite(now) && now > 0 ? now : Date.now();
+  var lock = readTabLock(sessionId);
+  if (pickLeader(MY_TAB_ID, lock === null ? "" : lock.tabId, lock === null ? 0 : lock.at, stamp) !== "self") return false;
+  try { window.localStorage.setItem(LOCK_KEY_PREFIX + sessionId, JSON.stringify({ tabId: MY_TAB_ID, at: stamp })); } catch (error) { /* 隐私模式 */ }
+  var channel = lockChannelOf();
+  if (channel !== null && typeof channel.postMessage === "function") {
+    try { channel.postMessage({ type: "lock", sessionId: sessionId, tabId: MY_TAB_ID, at: stamp }); } catch (error) { /* 通道坏了 */ }
+  }
+  return true;
+}
+
 /* ─── 读数采样账本（v1.18.0）：按会话 id 存，刷新页面不清零 ──────────────────
  * 以前 samples/jumps 只活在内存里，刷新一次就归零 → "实测速率"和"到线约还有"要重新等
  * 一轮读数才出现，看着就像功能坏了。现在按会话 id 落盘（互不串档），刷新后立刻能算。
@@ -3764,6 +3965,80 @@ function writeSamplerRecord(sessionId, sampler) {
 }
 
 /**
+ * 收集"最近若干次会话的上下文峰值"（v1.19.0）：给「该把黄线/红线设到哪」提供依据。
+ * 数据直接来自各会话已有的采样账本（gs.signoff.sampler.<id>），**不新增任何存储**。
+ * @returns {Array<{sessionId:string, tokens:number, at:number}>} 按峰值降序、最多 30 条。
+ */
+function collectPeakSamples() {
+  var out = [];
+  try {
+    var total = window.localStorage.length;
+    for (var i = 0; i < total; i += 1) {
+      var key = window.localStorage.key(i);
+      if (key === null || key.indexOf(SAMPLER_KEY_PREFIX) !== 0) continue;
+      var id = key.slice(SAMPLER_KEY_PREFIX.length);
+      var record = readSamplerRecord(id);
+      var peak = 0;
+      for (var j = 0; j < record.samples.length; j += 1) {
+        if (record.samples[j].used > peak) peak = record.samples[j].used;
+      }
+      if (peak > 0) out.push({ sessionId: id, tokens: peak, at: record.lastUsedAt });
+    }
+  } catch (error) { return []; }
+  out.sort(function (a, b) { return b.tokens - a.tokens; });
+  return out.slice(0, 30);
+}
+
+/** 取 90 分位（排序后按 Math.ceil(n*0.9)-1 取；样本很少时自然退化成最大值）。 */
+function percentile90(list) {
+  var values = [];
+  for (var i = 0; i < list.length; i += 1) {
+    if (typeof list[i] === "number" && isFinite(list[i]) && list[i] > 0) values.push(list[i]);
+  }
+  if (values.length === 0) return 0;
+  values.sort(function (a, b) { return a - b; });
+  return values[Math.min(values.length - 1, Math.ceil(values.length * 0.9) - 1)];
+}
+
+/** 取整到 step 的倍数，并夹在 [min, max]（非数字一律回落到 min）。 */
+function roundToStep(value, step, min, max) {
+  var rounded = Math.round(value / step) * step;
+  if (!isFinite(rounded)) return min;
+  if (rounded < min) return min;
+  if (rounded > max) return max;
+  return rounded;
+}
+
+/**
+ * 按历史峰值建议预算档位（v1.19.0）。**只给建议，绝不自动改用户的设置**。
+ * 样本不足 5 条时返回 null —— 宁可不说，也不拿两三条记录去猜。
+ * @param {Array} peaks collectPeakSamples() 的结果。
+ * @param {number} warn 当前黄线。
+ * @param {number} critical 当前红线。
+ * @returns {Object|null} { warn, critical, sampleCount, reason }。
+ */
+function suggestBudget(peaks, warn, critical) {
+  var list = Array.isArray(peaks) ? peaks : [];
+  var tokens = [];
+  for (var i = 0; i < list.length; i += 1) {
+    if (list[i] !== null && typeof list[i] === "object" && typeof list[i].tokens === "number"
+      && isFinite(list[i].tokens) && list[i].tokens > 0) tokens.push(list[i].tokens);
+  }
+  if (tokens.length < 5) return null;
+  var p90 = percentile90(tokens);
+  if (p90 <= 0) return null;
+  var nextWarn = roundToStep(p90 * 0.8, 5000, 5000, 900000);
+  var nextCritical = roundToStep(p90 * 1.2, 5000, 10000, 999000);
+  if (nextCritical <= nextWarn) nextCritical = nextWarn + 5000;
+  return {
+    warn: nextWarn,
+    critical: nextCritical,
+    sampleCount: tokens.length,
+    reason: "按最近 " + String(tokens.length) + " 次会话的峰值 " + formatWan(p90) + " 估算（当前 " + formatWan(warn) + " / " + formatWan(critical) + "）"
+  };
+}
+
+/**
  * 问宿主半要"这个会话什么时候开始的 + 上一轮统计"。
  * 失败（插件宿主半没加载 / 网络抖动）时返回上一次的答案（可能是 null），调用方据此退回本地兜底。
  * @param {string} sessionId 当前会话 id（空串表示"宿主半自己找当前会话"）。
@@ -3817,7 +4092,11 @@ function fetchContextParts(sessionId) {
  * @returns {Promise<Object|null>} { session:{costCNY}, today:{costCNY}, week:{costCNY}, top:[…] }。
  */
 function fetchCostInfo(sessionId, days) {
-  var key = (typeof sessionId === "string" ? sessionId : "") + "#" + String(days === undefined ? 7 : days);
+  // v1.19.0：单价跟着设置页走（宿主半按这三个数换算），所以缓存 key 必须带上单价 ——
+  // 否则用户改完单价，页面还拿旧缓存显示旧价钱。
+  var pricing = normalizePricing(uiState.pricing);
+  var priceKey = pricing.in + "," + pricing.cacheRead + "," + pricing.out;
+  var key = (typeof sessionId === "string" ? sessionId : "") + "#" + String(days === undefined ? 7 : days) + "#" + priceKey;
   var now = Date.now();
   if (costCache.data !== null && costCache.key === key && now - costCache.at < COST_TTL_MS) {
     return Promise.resolve(costCache.data);
@@ -3825,6 +4104,9 @@ function fetchCostInfo(sessionId, days) {
   var query = [];
   if (typeof sessionId === "string" && sessionId.length > 0) query.push("sessionId=" + encodeURIComponent(sessionId));
   query.push("days=" + String(days === undefined ? 7 : days));
+  query.push("priceIn=" + String(pricing.in));
+  query.push("priceCache=" + String(pricing.cacheRead));
+  query.push("priceOut=" + String(pricing.out));
   var url = COST_API + "?" + query.join("&");
   return fetch(url, { cache: "no-store", headers: { accept: "application/json" } })
     .then(function (response) { return response.ok ? response.json() : null; })
@@ -4277,14 +4559,211 @@ function fillComposer(text) {
  */
 var SUMMARY_PROMPT = "请把本次会话整理成一份交接摘要：目标、已确认的结论、涉及的关键文件或路径、待办与注意事项。写完后我会带着它开新会话继续。";
 /**
- * 交接包（v1.14.0）：光把摘要留在对话里没用 —— 会话一换，摘要就跟着旧上下文一起沉底。
- * 所以这句话多要一步：**把摘要落盘成工作区根目录的 HANDOFF.md**，新会话开局能直接读它。
- * （宿主半的提示段里同时加了一条约定：工作区有 HANDOFF.md 时，开场先读过来。）
+ * 交接包：摘要要落盘成工作区根目录的 HANDOFF.md，新会话开局才读得到（宿主提示段里也约定了"有就先读"）。
+ * v1.19.0：落盘不再靠模型写文件 —— 模型只把摘要当正文输出并用两行标记包起来，前端监听到标记后调宿主
+ * POST /handoff 写文件；省一次工具往返，也不怕它忘了写。落盘失败仍有剪贴板兜底。
  */
 var HANDOFF_FILE = "HANDOFF.md";
+/** 交接摘要的起止标记（要模型原样输出成两行，前端据此把中间那段正文抠出来）。 */
+var HANDOFF_MARK_START = "<<<HANDOFF>>>";
+var HANDOFF_MARK_END = "<<<END>>>";
 var HANDOFF_PROMPT = "请把本次会话整理成一份交接摘要：目标、已确认的结论、涉及的关键文件或路径、待办与注意事项。"
-  + "然后用 write 工具把它写进工作区根目录的 " + HANDOFF_FILE + "（已存在就直接覆盖），"
-  + "写好后回我一句「已写入 " + HANDOFF_FILE + "」。接着我会开新会话，带着这份文件继续。";
+  + "把这份摘要**直接作为你的回复正文输出**，并用两行标记把它包起来：第一行只写 " + HANDOFF_MARK_START
+  + "，最后一行只写 " + HANDOFF_MARK_END + "，中间只放摘要正文。"
+  + "不要用 write 工具写文件、不要在标记之外多写其它内容 —— 这个界面会自动把标记中间的内容落盘成工作区根目录的 "
+  + HANDOFF_FILE + "。接着我会开新会话，带着这份文件继续。";
+
+/* ─── 交接摘要监听（v1.19.0）：正文里出现标记 → 调宿主接口落盘 ─────────────────
+ * 观察的是 document.body（不能假设 [data-dsh-part="message-body"] 挂载时就存在 ——
+ * hero 欢迎态下一条消息都没有，实测这些元素数量为 0）。取文本时优先用 message-body 这个
+ * 稳定语义钩子，钩子变了就退回"任意同时含两个标记的元素"，保证功能不因属性改名而失效。
+ */
+var HANDOFF_API = API + "/handoff";
+/** 落盘结果显示在哪：进度条组件挂上时把 setSumNotice 写进来（拿不到就只留控制台）。 */
+var handoffNoticeSink = null;
+/** DOM 静止这么久才抓（流式期间不抓，免得落盘半截）；太短的片段不落盘（多半是误抓，输入框里那句"要求"也含标记）。 */
+var HANDOFF_SCAN_DELAY_MS = 900;
+var HANDOFF_MIN_CHARS = 32;
+/** 监听器状态（一个页面只需要一个）。 */
+var handoffWatch = { observer: null, timer: 0, lastText: "", busy: false, queued: "", done: {} };
+
+function handoffNotice(text) {
+  if (typeof handoffNoticeSink === "function") {
+    try { handoffNoticeSink(text); return; } catch (error) { /* 组件已卸载：落到控制台 */ }
+  }
+  console.log("[greet-signoff] " + text);
+}
+
+/** 抠出两个标记之间的内容（纯函数）：没标记 / 缺结束标记 / 内容不足 HANDOFF_MIN_CHARS → null。 */
+function extractHandoffText(text) {
+  if (typeof text !== "string" || text.length === 0) return null;
+  var start = text.indexOf(HANDOFF_MARK_START);
+  if (start < 0) return null;
+  var from = start + HANDOFF_MARK_START.length;
+  var end = text.indexOf(HANDOFF_MARK_END, from);
+  if (end < 0) return null;
+  var body = text.slice(from, end).replace(/^[\s\u200B\uFEFF]+|[\s\u200B\uFEFF]+$/g, "");
+  return body.length < HANDOFF_MIN_CHARS ? null : body;
+}
+
+/** 同一段摘要只落盘一次用的去重键（长度 + 头尾各 48 字）。 */
+function handoffKey(body) {
+  var text = typeof body === "string" ? body : "";
+  if (text.length <= 96) return text.length + ":" + text;
+  return text.length + ":" + text.slice(0, 48) + ":" + text.slice(-48);
+}
+
+/** 落盘失败兜底：把摘要复制到剪贴板。 */
+function copyHandoffFallback(text) {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { }, function () { });
+    }
+  } catch (error) { /* 剪贴板被禁：忽略 */ }
+}
+
+/** 问宿主半要当前会话的工作目录（POST /handoff 必须带绝对路径 cwd）。 */
+function fetchWorkspaceCwd() {
+  return fetch(API + "/rule-text", { cache: "no-store", headers: { accept: "application/json" } })
+    .then(function (response) { return response.ok ? response.json() : null; })
+    .then(function (data) {
+      if (data === null || data === undefined || data.ok !== true) return null;
+      return typeof data.cwd === "string" && data.cwd.length > 0 ? data.cwd : null;
+    })
+    .catch(function () { return null; });
+}
+
+/** 交给宿主落盘：任何失败都只提示 + 剪贴板兜底，绝不抛（不能把进度条搞坏）。 */
+function submitHandoff(text) {
+  if (typeof text !== "string" || text.length === 0) return;
+  handoffWatch.busy = true;
+  var finish = function (message) {
+    handoffWatch.busy = false;
+    handoffNotice(message);
+    var queued = handoffWatch.queued;
+    handoffWatch.queued = "";
+    if (queued.length > 0) submitHandoff(queued);
+  };
+  fetchWorkspaceCwd().then(function (cwd) {
+    if (cwd === null) {
+      copyHandoffFallback(text);
+      finish("抓到交接摘要了，但拿不到当前工作区路径：摘要已复制到剪贴板，粘成 " + HANDOFF_FILE + " 一样能用。");
+      return null;
+    }
+    return fetch(HANDOFF_API, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ cwd: cwd, filename: HANDOFF_FILE, text: text })
+    }).then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (data !== null && data !== undefined && data.ok === true) {
+          var parts = String(typeof data.path === "string" && data.path.length > 0 ? data.path : HANDOFF_FILE).split(/[\\/]/);
+          var name = parts[parts.length - 1];
+          var bytes = typeof data.bytes === "number" && isFinite(data.bytes) ? data.bytes : 0;
+          finish("已写入 " + name + "（" + bytes + " 字节" + (data.replaced === true ? "，旧内容备份成 " + name + ".bak" : "")
+            + "）—— 开新会话就能直接读到。");
+          return;
+        }
+        var reason = data !== null && data !== undefined && typeof data.error === "string" ? data.error : "宿主接口没响应";
+        copyHandoffFallback(text);
+        finish("交接摘要落盘失败（" + reason + "）：已复制到剪贴板，粘成 " + HANDOFF_FILE + " 也能用。");
+      });
+  }).catch(function () {
+    copyHandoffFallback(text);
+    finish("交接摘要落盘失败（接口异常）：已复制到剪贴板，粘成 " + HANDOFF_FILE + " 也能用。");
+  });
+}
+
+/** 候选节点：优先助手正文（message-body），没有就退回"同时含两个标记"的容器。 */
+function handoffCandidateNodes() {
+  if (typeof document === "undefined") return [];
+  var list = [];
+  var bodies = document.querySelectorAll('[data-dsh-part="message-body"]');
+  for (var i = 0; i < bodies.length; i += 1) list.push(bodies[i]);
+  if (list.length > 0) return list;
+  var boxes = document.querySelectorAll('[data-streaming],[data-dsh-part="message-row"],[data-dsh-part="scrollport"],article,main');
+  for (var j = boxes.length - 1; j >= 0; j -= 1) {
+    var el = boxes[j];
+    if (el === null || el === undefined) continue;
+    // 输入框里的那段"要求"里也有这两个标记，别把它当摘要
+    if (typeof el.closest === "function") {
+      var inComposer = null;
+      try { inComposer = el.closest('[contenteditable],textarea,[data-dsh-part="composer-input"]'); } catch (error) { inComposer = null; }
+      if (inComposer !== null) continue;
+    }
+    var text = typeof el.textContent === "string" ? el.textContent : "";
+    if (text.indexOf(HANDOFF_MARK_START) >= 0 && text.indexOf(HANDOFF_MARK_END) >= 0) list.push(el);
+  }
+  return list;
+}
+
+/** 扫一次：从最新那个候选节点抠摘要，抠到就交给宿主落盘。 */
+function scanHandoffBodies() {
+  var nodes = handoffCandidateNodes();
+  if (nodes.length === 0) return;
+  var node = nodes[nodes.length - 1];
+  if (node === null || node === undefined) return;
+  // 还在流式输出：等它写完（属性没变过也没关系 —— 900ms 的静默去抖也会等到它写完）
+  if (typeof node.closest === "function") {
+    var streaming = null;
+    try { streaming = node.closest("[data-streaming]"); } catch (error) { streaming = null; }
+    if (streaming !== null) return;
+  }
+  var text = typeof node.textContent === "string" ? node.textContent : "";
+  if (text.length === 0 || text === handoffWatch.lastText) return;
+  handoffWatch.lastText = text;
+  var body = extractHandoffText(text);
+  if (body === null || body.length < HANDOFF_MIN_CHARS) return;
+  var key = handoffKey(body);
+  if (handoffWatch.done[key] === true) return;
+  handoffWatch.done[key] = true;
+  if (handoffWatch.busy) { handoffWatch.queued = body; return; }
+  submitHandoff(body);
+}
+
+/** 把一串 mutation 合并成一次扫描（去抖：文本静下来 HANDOFF_SCAN_DELAY_MS 之后才看）。 */
+function scheduleHandoffScan() {
+  if (typeof window === "undefined" || typeof window.setTimeout !== "function") return;
+  if (handoffWatch.timer !== 0) window.clearTimeout(handoffWatch.timer);
+  handoffWatch.timer = window.setTimeout(function () {
+    handoffWatch.timer = 0;
+    try { scanHandoffBodies(); } catch (error) { console.error("[greet-signoff] handoff scan failed", error); }
+  }, HANDOFF_SCAN_DELAY_MS);
+}
+
+/** 装上监听：观察 document.body，元素还没出现时观察也已经生效。 */
+function startHandoffWatcher() {
+  if (handoffWatch.observer !== null) return;
+  if (typeof document === "undefined" || typeof MutationObserver !== "function") return;
+  if (document.body === null || document.body === undefined) return;
+  try {
+    handoffWatch.observer = new MutationObserver(function () { scheduleHandoffScan(); });
+    handoffWatch.observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  } catch (error) {
+    handoffWatch.observer = null;
+    return;
+  }
+  scheduleHandoffScan();
+}
+
+/** 卸下监听（插件被卸载 / 页面要走了）。 */
+function stopHandoffWatcher() {
+  if (handoffWatch.observer !== null) {
+    try { handoffWatch.observer.disconnect(); } catch (error) { /* 已经断了 */ }
+    handoffWatch.observer = null;
+  }
+  if (handoffWatch.timer !== 0 && typeof window !== "undefined") {
+    window.clearTimeout(handoffWatch.timer);
+    handoffWatch.timer = 0;
+  }
+}
+
+/** 页面是不是在后台（隐藏）——隐藏时这一次心跳整个跳过：不写账本、不重算、也不抢锁。 */
+function pageHidden() {
+  if (typeof document === "undefined") return false;
+  if (document.hidden === true) return true;
+  return typeof document.visibilityState === "string" && document.visibilityState === "hidden";
+}
 
 function GreetDock(props) {
   var store = useConfig();
@@ -4352,6 +4831,13 @@ function GreetDock(props) {
   var sumPair = React.useState("");
   var sumNotice = sumPair[0];
   var setSumNotice = sumPair[1];
+  // v1.19.0：交接摘要落盘的结果就显示在这行 .gs-dock-note 上（监听器在 apply 里装，这里只登记出口）。
+  React.useEffect(function () {
+    handoffNoticeSink = setSumNotice;
+    return function () {
+      if (handoffNoticeSink === setSumNotice) handoffNoticeSink = null;
+    };
+  }, []);
 
   // 与输入框对齐：实时量输入框卡片相对本容器的左右缩进（hero/对话态、侧栏收放、滚动条出现都会变）。
   React.useEffect(function () {
@@ -4431,6 +4917,8 @@ function GreetDock(props) {
   var activeSessionMs = activePair[0];
   var setActiveSessionMs = activePair[1];
   var activeRef = React.useRef({ id: "", totalMs: 0, lastAt: 0, savedAt: 0 });
+  // v1.19.0：页面被隐藏的时刻（0=没在隐藏）。回到可见时用它把隐藏的这段时间从活跃时长里摘掉。
+  var hiddenSinceRef = React.useRef(0);
   // ── v1.14.0：花费与"上下文被谁撑大"。两者都读本机台账/projcache，拿不到就当没有，
   //    绝不会因为宿主半是旧版或文件缺失而把进度条本体搞坏。
   var costPair = React.useState(null);
@@ -4462,12 +4950,31 @@ function GreetDock(props) {
     return function () { alive = false; };
   }, [sessionId, usedTokens]);
   React.useEffect(function () {
-    var timer = window.setInterval(function () {
-      // 页面在后台时不折腾：DSH 常挂着，后台每分钟重渲染没意义
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    // v1.19.0：页面在后台（document.hidden）时，这一次心跳整个跳过 —— 不重算、不写账本，
+    // 因为活跃时长与采样账本都不该被"后台挂着的标签页"推动。
+    function tick() {
+      if (pageHidden()) { hiddenSinceRef.current = Date.now(); return; }
       setNow(Date.now());
-    }, TIME_TICK_MS);
-    return function () { window.clearInterval(timer); };
+    }
+    var timer = window.setInterval(tick, TIME_TICK_MS);
+    /** 回到可见：立刻补跑一次心跳，并把隐藏那段时间从活跃时长里摘掉（不改"超 5 分钟算断档"的规则）。 */
+    function onVisibility() {
+      if (pageHidden()) { hiddenSinceRef.current = Date.now(); return; }
+      if (hiddenSinceRef.current > 0) {
+        hiddenSinceRef.current = 0;
+        if (activeRef.current.lastAt > 0) activeRef.current.lastAt = Date.now();
+      }
+      setNow(Date.now());
+    }
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+    return function () {
+      window.clearInterval(timer);
+      if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
+    };
   }, []);
   React.useEffect(function () {
     setLocalStart(sessionId.length === 0 ? null : localSessionStart(sessionId));
@@ -4495,6 +5002,7 @@ function GreetDock(props) {
   }
   React.useEffect(function () {
     if (usedTokens < 0) return;
+    if (pageHidden()) return;
     var sampler = samplerRef.current.state;
     var stamp = Date.now();
     if (sampler.last === null) { sampler.last = usedTokens; sampler.lastUsedAt = stamp; return; }
@@ -4507,18 +5015,20 @@ function GreetDock(props) {
       sampler.last = usedTokens;
       sampler.lastUsedAt = stamp;
       // 每记满一轮就落盘一次：这是"速率/还剩几轮"的核心数据，丢了就得重新等一轮。
-      writeSamplerRecord(sessionId, sampler);
+      // 只有抢到"记账锁"的标签才写（多标签互斥，v1.19.0）。
+      if (heartbeatIsLeader(sessionId, stamp)) writeSamplerRecord(sessionId, sampler);
     } else if (delta < -200) {
       // 压缩/清空导致占用回落：重置基线，别把负数算进每轮成本，也别让速率被这次回落带偏
       sampler.last = usedTokens;
       sampler.lastUsedAt = stamp;
       sampler.samples = [];
-      writeSamplerRecord(sessionId, sampler);
+      if (heartbeatIsLeader(sessionId, stamp)) writeSamplerRecord(sessionId, sampler);
     }
   }, [usedTokens, sessionId]);
   // 时间轴采样：每次读数走一下或占用变了就记一个 {时刻, 占用} 点，用来算"每分钟烧多少 token"。
   React.useEffect(function () {
     if (!hasReading || usedTokens < 0) return;
+    if (pageHidden()) return;
     var sampler = samplerRef.current.state;
     var tail = sampler.samples.length === 0 ? null : sampler.samples[sampler.samples.length - 1];
     if (tail !== null && tail.used === usedTokens && now - tail.t < TIME_TICK_MS) return;
@@ -4526,10 +5036,12 @@ function GreetDock(props) {
     if (sampler.samples.length > SAMPLE_LIMIT) sampler.samples.shift();
     var cutoff = now - SAMPLE_WINDOW_MS;
     while (sampler.samples.length > 2 && sampler.samples[0].t < cutoff) sampler.samples.shift();
-    // 节流落盘（一分钟一次）：刷新页面后"实测速率"立刻能算，不用再等一轮。
+    // 节流落盘（一分钟一次）：刷新页面后"实测速率"立刻能算，不用再等一轮。同样只有 leader 才写。
     if (sampler.savedAt === 0 || now - sampler.savedAt >= 60000) {
-      sampler.savedAt = now;
-      writeSamplerRecord(sessionId, sampler);
+      if (heartbeatIsLeader(sessionId, now)) {
+        sampler.savedAt = now;
+        writeSamplerRecord(sessionId, sampler);
+      }
     }
   }, [now, usedTokens, hasReading, sessionId]);
   var jumps = samplerRef.current.state.jumps;
@@ -4577,9 +5089,17 @@ function GreetDock(props) {
     ? sessionInfo.startedAt : null;
   var serverAnswersThisSession = serverStartedAt !== null && sessionId.length > 0
     && typeof sessionInfo.sessionId === "string" && sessionInfo.sessionId === sessionId;
+  // v1.19.0：宿主半与浏览器半版本不一致时，在进度条下面那行小字里直说（设置页自检那条保留不动）。
+  var hostVersion = sessionInfo !== null && sessionInfo !== undefined && typeof sessionInfo.hostVersion === "string"
+    ? sessionInfo.hostVersion : "";
+  var versionNote = hostVersion !== "" && hostVersion !== CLIENT_VERSION
+    ? "⚠️ 插件浏览器半 v" + CLIENT_VERSION + " 与宿主半 v" + hostVersion + " 不一致：重启一次 DSH 才会全部生效"
+    : "";
   // 活跃时长心跳：每 5 秒走一步，断档（超过 5 分钟没动静）不计入；按会话 id 各自记账，绝不跨会话。
   React.useEffect(function () {
     if (sessionId.length === 0) return;
+    // 页面隐藏（后台标签页）时这次心跳整个跳过：不累加、不写账本（v1.19.0）。
+    if (pageHidden()) return;
     var rec = activeRef.current;
     if (rec.id !== sessionId) {
       var stored = readActiveRecord(sessionId);
@@ -4592,9 +5112,12 @@ function GreetDock(props) {
       serverAnswersThisSession ? serverStartedAt : null, null);
     rec.totalMs = next.totalMs;
     rec.lastAt = next.lastAt;
+    // 多标签互斥（v1.19.0）：只有抢到记账锁的标签才落盘，没抢到的只读显示，避免时长翻倍。
     if (rec.totalMs > 0 && (rec.savedAt === 0 || now - rec.savedAt >= 30000)) {
-      writeActiveRecord(sessionId, rec.totalMs, rec.lastAt);
-      rec.savedAt = now;
+      if (heartbeatIsLeader(sessionId, now)) {
+        writeActiveRecord(sessionId, rec.totalMs, rec.lastAt);
+        rec.savedAt = now;
+      }
     }
     if (next.totalMs !== activeSessionMs) setActiveSessionMs(next.totalMs);
   }, [now, sessionId, serverAnswersThisSession, serverStartedAt]);
@@ -4668,15 +5191,17 @@ function GreetDock(props) {
    * ① 先试着直接写进输入框（DSH 的编辑器受控，未必吃）；
    * ② 写不进去就复制到剪贴板；③ 连剪贴板也不可用，就把整句话显示出来。
    * 全程不自动发送 —— 免得误触把话发出去。
+   * v1.19.0：要求里带 <<<HANDOFF>>> / <<<END>>> 标记，模型只回一段带标记的摘要正文，
+   * 界面监听到标记后自己调宿主接口落盘（不再要求模型用 write 工具写文件）。
    */
   function askSummary() {
     if (fillComposer(HANDOFF_PROMPT)) {
-      setSumNotice("已把「总结要点」写进输入框：按回车发给它 —— 它会顺手把摘要落盘成 " + HANDOFF_FILE + "，新会话开局能直接读到。");
+      setSumNotice("已把「总结要点」写进输入框：按回车发给它 —— 它会回一段带 " + HANDOFF_MARK_START + " 标记的摘要，界面自己落盘成 " + HANDOFF_FILE + "。");
       return;
     }
     var done = function (ok) {
       setSumNotice(ok
-        ? "已把交接要求复制到剪贴板：粘到输入框发给我就行（会要求它写进 " + HANDOFF_FILE + "）"
+        ? "已把交接要求复制到剪贴板：粘到输入框发给我就行（摘要会由界面落盘成 " + HANDOFF_FILE + "）"
         : "输入框写不进去（编辑器受控），请手动把这句话发给我：" + HANDOFF_PROMPT);
     };
     try {
@@ -4839,6 +5364,16 @@ function GreetDock(props) {
   var rateKpiText = ratePerMinute === null ? "" : "~" + formatTokens(Math.round(ratePerMinute)) + "/分";
   var turnsKpiText = turnsLeft === null ? "" : turnsLeft + " 轮";
   var staleSpan = staleText === "" ? null : React.createElement("span", null, "· " + staleText);
+  // v1.19.0（发哥要求）：这一行末尾再加一段「上一轮 ↑X.X 万」—— 上一轮回复让上下文涨了多少。
+  // 数据就是采样账本里最近一次轮次跃升；没有（还没聊满两轮）就整段不显示。涨幅 ≥ 5 万标警示色。
+  var lastRise = lastJumpRise(samplerRef.current.state);
+  var riseWarn = lastRise !== null && lastRise >= RISE_WARN_TOKENS;
+  var riseSpan = lastRise === null ? null
+    : React.createElement("span", {
+        className: "gs-dock-rise" + (riseWarn ? " gs-dock-rise-warn" : ""),
+        title: "上一轮回复让上下文涨了 " + formatTokens(lastRise) + " tok"
+          + (riseWarn ? "（单轮涨这么多，多半是工具调用或大文件读进来的）" : "")
+      }, (staleSpan === null ? "" : "· ") + "上一轮 ↑" + formatWan(lastRise));
   // ── 方案 7（v1.15.0）：上面三格读数（占用 / 花费 / 时长），下面一条贯通进度线 ──────────
   // 三格已经承担了"读数"职责，所以"完整"形态下时间行只留两个不重复的信息：
   // 实测速率（token/分，确实发生过的数）与读数新鲜度；两个都没有就整行不渲染，不留空行。
@@ -4898,11 +5433,16 @@ function GreetDock(props) {
         })
       )
     : null;
-  var metaNode = display === "full" && showTime && staleSpan !== null
-    ? React.createElement("div", { className: "gs-dock-time", title: detail }, staleSpan)
+  var metaNode = display === "full" && showTime && (staleSpan !== null || riseSpan !== null)
+    ? React.createElement("div", { className: "gs-dock-time", title: detail }, staleSpan, riseSpan)
     : null;
   // 上下文构成明细（v1.14.0）：只告诉"用了多少"没用，得说清"是谁占的"才谈得上砍。
   // 数据由宿主半读本机上下文投影（contextTimeline），这里纯展示；默认收起，点标题才展开。
+  // v1.19.0：已经有读数、却始终拿不到花费明细 → 说明宿主半没响应、或本会话还没有投影文件，
+  // 直说原因，比只显示一个「—」有用（也顺带提示"重启一次 DSH"这条常见解法）。
+  var sourceNote = hasReading && (costInfo === null || costInfo === undefined)
+    ? "ℹ️ 拿不到花费明细：宿主半没响应、或本会话还没有投影（重启一次 DSH 试试）"
+    : "";
   var parts = partsInfo !== null && partsInfo !== undefined && Array.isArray(partsInfo.parts) ? partsInfo.parts : [];
   var partsOpen = ui.showParts === true;
   // v1.15.3：标题不再带「（这些 token 是谁占的）」这截解释 —— 展开后哪一行是谁占的一目了然，
@@ -5034,7 +5574,11 @@ function GreetDock(props) {
         // 只有"没到线"时才各自独立成行 —— 没有卡可依附，就还是原来的轻量小字。
         display === "text" || tone !== "ok" ? null : partsNode,
         display === "text" || tone !== "ok" ? null : suggestNode,
-        sumNotice === "" ? null : React.createElement("div", { className: "gs-dock-note" }, sumNotice)
+        (sumNotice === "" && versionNote === "" && sourceNote === "") ? null
+          : React.createElement("div", { className: "gs-dock-note" },
+              versionNote === "" ? null : React.createElement("div", { className: "gs-dock-note-warn" }, versionNote),
+              sourceNote === "" ? null : React.createElement("div", null, sourceNote),
+              sumNotice === "" ? null : React.createElement("div", null, sumNotice))
       )
     )
   );
@@ -6062,6 +6606,12 @@ function apply(ctx) {
 
   // 连接自愈要在 slots 检查之前装：即使 slots 服务没就绪，页面卡在"自动重连中"时也该能自救。
   installConnectionWatchdog(ctx);
+  // v1.19.0 交接摘要监听：观察 document.body（不能假设 message-body 挂载时就存在 ——
+  // hero 欢迎态下一条消息都没有），正文里出现标记就调宿主 /handoff 落盘。
+  ctx.effect(function () {
+    startHandoffWatcher();
+    return stopHandoffWatcher;
+  }, "greet-signoff:handoff-watch");
   // 调试钩子也提前挂：出问题时（哪怕设置页打不开）控制台里也能拿到版本与统计。
   installDebugHook(ctx);
 
@@ -6149,6 +6699,23 @@ module.exports = {
     // v1.18.0：活跃时长记账 + 采样账本（按会话 id 分开存，刷新/切会话都不串）
     activeElapsed: activeElapsed,
     emptySampler: emptySampler,
+    // v1.19.0：进度条「上一轮 ↑」/ 交接摘要标记解析 / 多标签账本互斥
+    lastJumpRise: lastJumpRise,
+    riseWarnTokens: RISE_WARN_TOKENS,
+    extractHandoffText: extractHandoffText,
+    handoffMarkStart: HANDOFF_MARK_START,
+    handoffMarkEnd: HANDOFF_MARK_END,
+    handoffMinChars: HANDOFF_MIN_CHARS,
+    pickLeader: pickLeader,
+    // v1.19.0：档位建议（按历史峰值）+ 计价口径（单价可配置 / 与台账对账）
+    suggestBudget: suggestBudget,
+    percentile90: percentile90,
+    roundToStep: roundToStep,
+    normalizePricing: normalizePricing,
+    normalizePriceValue: normalizePriceValue,
+    pricingIsDefault: pricingIsDefault,
+    priceDefault: PRICE_DEFAULT,
+    tabLockTtlMs: LOCK_TTL_MS,
     activeIdleMaxMs: ACTIVE_IDLE_MAX_MS,
     activeFreshMaxMs: ACTIVE_FRESH_MAX_MS,
     remainingTimeMs: remainingTimeMs,
