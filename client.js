@@ -421,10 +421,12 @@ function writeRecentEmojis(list) {
 }
 
 var TEXT_LIMIT = 200;
+/** 旧文案兜底最多几条（v1.14.0：30 → 8；换过固定行才需要它，一次性兜底用不了 30 条）。 */
+var LEGACY_LINES_MAX = 8;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.12.0";
+var CLIENT_VERSION = "1.18.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -795,9 +797,39 @@ function css() {
     // 否则外层会显示一块比进度条宽得多的白底（用户看到的"多余白框"）。
     'html[data-dsh-skin] [data-slot="conversation.input.dock"] > .gs-dock:not([data-gs-dock]),html[data-dsh-skin] [data-slot="conversation.composer.dock"] > .gs-dock:not([data-gs-dock]),html[data-dsh-custom-theme] [data-slot="conversation.input.dock"] > .gs-dock:not([data-gs-dock]),html[data-dsh-custom-theme] [data-slot="conversation.composer.dock"] > .gs-dock:not([data-gs-dock]){background:none !important;border:0 !important;box-shadow:none !important}',
     ".gs-dock-row{box-sizing:border-box;width:100%}",
+    /* v1.15.2 统一胶囊容器：三格读数 / 进度条 / 时间行 / 预算胶囊 / 到线横幅 全部装进**同一个**卡里，
+       共用一条边框、一个底色、一条左右边界；不再各自另起一方（那是"三块各说各的"+白占纵向空间）。
+       inside 的 padding 只作用在这一层：外层 .gs-dock 仍然零内边距、零背景，
+       这样宿主主题对输入区附属卡片（[data-slot="…dock"] > *）的强制白底不会跟着撑出"多余白框"。 */
+    ".gs-dock-stack{box-sizing:border-box;width:100%;display:flex;flex-direction:column;gap:6px;padding:7px 10px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:rgba(127,127,127,.05);overflow:visible}",
+    'html[data-gs-dark="1"] .gs-dock-stack{background:rgba(255,255,255,.045)}',
+    /* 容器内的子卡片一律脱掉自己的边框/底色：它们现在是同一张卡里的分区，靠容器统一收边 */
+    ".gs-dock-stack>.gs-dock-kpis,.gs-dock-stack>.gs-dock-banner,.gs-dock-stack>.gs-dock-parts,.gs-dock-stack>.gs-dock-suggest,.gs-dock-stack>.gs-dock-time,.gs-dock-stack>.gs-dock-mode,.gs-dock-stack>.gs-dock-textrow,.gs-dock-stack>.gs-dock-note{margin-top:0}",
     ".gs-dock-bar{position:relative;width:100%;height:var(--gs-bar-h,9px);border-radius:999px;background-color:var(--dsw-alias-interactive-bg-hover);background-image:var(--gs-scale-faint,none);background-size:100% 100%;background-repeat:no-repeat}",
     ".gs-dock-fill{height:100%;border-radius:999px;transition:width .35s ease,background-color .35s ease;background-image:var(--gs-scale,none);background-size:calc(10000% / var(--gs-percent,100)) 100%;background-repeat:no-repeat}",
     ".gs-dock-critical .gs-dock-fill{animation:gs-alarm 1.1s ease-in-out infinite}",
+    /* 方案 7「KPI 三格 + 贯通线」（v1.15.0）：占用 / 花费 / 时长 三格等宽读数，底部一条贯通进度线。
+       配色取 A（语义状态色：占用数字=状态本身）+ C（数字胶囊底：数字后面垫一层同色淡底，颜色由 JS 现算）。 */
+    /* v1.15.2：三格读数并进统一容器后，自己不再是"一张卡"——只留一条细分隔线把它和进度条分区 */
+    ".gs-dock-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0;padding:0 0 6px;border:0;border-bottom:1px solid var(--dsw-alias-border-l2);border-radius:0;background:none}",
+    ".gs-dock-kpi{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}",
+    ".gs-dock-kpi-lab{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:14px;color:var(--dsw-alias-label-tertiary)}",
+    ".gs-dock-kpi-val{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 9px;border-radius:999px;font-size:15px;font-weight:700;line-height:22px;font-variant-numeric:tabular-nums}",
+    ".gs-dock-kpi-val i{font-style:normal;font-size:11px;font-weight:500;opacity:.82}",
+    /* v1.16.0：KPI 从三格扩到四/五格（多出「预算档」与「实测速率」两格，样式与前三格一致）。
+       列数按实际格数给类名；窄窗口退回 3 列 / 2 列，避免"万/分"这类数字被挤成省略号。 */
+    ".gs-dock-kpis-4{grid-template-columns:repeat(4,minmax(0,1fr))}",
+    ".gs-dock-kpis-5{grid-template-columns:repeat(5,minmax(0,1fr))}",
+    /* v1.17.0：第六格「到线约还有」进来后是 6 列；窗口一窄就退回 3 列 / 2 列（同上面 4/5 格的处理） */
+    ".gs-dock-kpis-6{grid-template-columns:repeat(6,minmax(0,1fr))}",
+    "@media (max-width:1080px){.gs-dock-kpis-6{grid-template-columns:repeat(3,minmax(0,1fr))}}",
+    "@media (max-width:900px){.gs-dock-kpis-5{grid-template-columns:repeat(3,minmax(0,1fr))}}",
+    "@media (max-width:620px){.gs-dock-kpis-4,.gs-dock-kpis-5,.gs-dock-kpis-6{grid-template-columns:repeat(2,minmax(0,1fr))}}",
+    /* 预算档那一格：菜单要挂在这一格下面（向上弹），所以格子里要能定位 */
+    ".gs-dock-kpi-mode{position:relative}",
+    ".gs-kpi-btn{font-family:inherit;cursor:pointer;border:1px solid transparent}",
+    ".gs-kpi-btn:hover{border-color:var(--dsw-alias-border-l2)}",
+    'html[data-gs-dark="1"] .gs-dock-kpis{background:rgba(255,255,255,.05)}',
     ".gs-marker{position:absolute;top:50%;transform:translate(-50%,-50%);transition:left .35s ease;pointer-events:none;z-index:2;display:flex;align-items:center;justify-content:center}",
     ".gs-marker-emoji{font-size:calc(var(--gs-bar-h,9px) + var(--gs-marker-extra,12px));line-height:1;filter:drop-shadow(0 1px 1px rgba(0,0,0,.28));animation:gs-drive 1.4s ease-in-out infinite}",
     ".gs-marker-img{height:calc(var(--gs-bar-h,9px) + var(--gs-marker-extra,12px) + 3px);width:auto;max-width:110px;object-fit:contain;filter:drop-shadow(0 1px 1px rgba(0,0,0,.28));animation:gs-drive 1.4s ease-in-out infinite}",
@@ -808,13 +840,32 @@ function css() {
     ".gs-tip{position:absolute;left:0;bottom:calc(100% + 6px);z-index:6;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:12px;line-height:16px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s ease}",
     ".gs-dock:hover .gs-tip{opacity:1}",
     ".gs-dock-alert{margin-top:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
-    /* 到线/超线的大横幅：不靠百分比，一眼就知道该开新会话了 */
-    ".gs-dock-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:6px;padding:6px 10px;border-radius:8px;font-size:13px;line-height:18px}",
+    /* 到线/超线的大横幅：不靠百分比，一眼就知道该开新会话了。
+       v1.15.1：把「该开新会话了 / 上下文构成 / 档位建议」合成**一张卡** ——
+       三块信息共用同一个边框与底色，卡内用细线分隔，不再上下三条各说各的。 */
+    ".gs-dock-banner{display:flex;flex-direction:column;gap:6px;margin-top:6px;padding:7px 10px;border-radius:10px;font-size:13px;line-height:18px}",
+    ".gs-dock-banner-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}",
     ".gs-dock-banner-main{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}",
     ".gs-dock-banner-title{font-size:15px;font-weight:700;white-space:nowrap}",
     ".gs-dock-banner-sub{font-size:12px;opacity:.9}",
     ".gs-dock-banner-warn{background:rgba(224,165,42,.18);border:1px solid rgba(224,165,42,.6);color:var(--dsw-alias-label-primary)}",
     ".gs-dock-banner-critical{background:#d93026;border:1px solid #b91c1c;color:#fff;animation:gs-alarm 1.1s ease-in-out infinite}",
+    /* 展开构成明细时停止闪动：一闪一闪没法逐行读数 */
+    ".gs-dock-banner-critical.gs-dock-banner-open{animation:none}",
+    /* 卡内的两块附加信息（上下文构成 / 档位建议）：细线分隔，颜色继承卡片（红底=白字） */
+    ".gs-dock-banner .gs-dock-parts,.gs-dock-banner .gs-dock-suggest{margin-top:0;padding-top:6px;border-top:1px solid rgba(255,255,255,.3);color:inherit}",
+    ".gs-dock-banner-warn .gs-dock-parts,.gs-dock-banner-warn .gs-dock-suggest{border-top-color:rgba(0,0,0,.16)}",
+    ".gs-dock-banner .gs-dock-parts-toggle{opacity:.95}",
+    ".gs-dock-banner .gs-dock-parts-toggle:hover{color:inherit;text-decoration:underline}",
+    /* 红卡是红底白字：轨道压暗、填充纯白，对比才够 */
+    ".gs-dock-banner .gs-parts-track{background:rgba(0,0,0,.22)}",
+    ".gs-dock-banner-warn .gs-parts-track{background:rgba(127,127,127,.28)}",
+    /* v1.15.3：红卡里的构成条不再用 currentColor（那是纯白，等于没颜色）——
+       每行用自己的 palette 色（--gs-part-color，由渲染时按行号给），红底上才分得清是哪一块。 */
+    ".gs-dock-banner .gs-parts-fill{background:var(--gs-part-color,currentColor)}",
+    ".gs-dock-banner .gs-parts-num{color:inherit;opacity:.95}",
+    ".gs-dock-banner .gs-hint{color:inherit;opacity:.85}",
+    ".gs-dock-banner .gs-dock-suggest-text{opacity:.95}",
     ".gs-dock-banner .gs-dock-new{border-color:currentColor;color:inherit;opacity:.92}",
     ".gs-dock-banner .gs-dock-new:hover{background:rgba(255,255,255,.18);color:inherit;opacity:1}",
     ".gs-dock-new{margin-left:8px;padding:1px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}",
@@ -845,6 +896,29 @@ function css() {
     ".gs-mode-pill:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
     ".gs-mode-pill-on{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary);font-weight:600}",
     ".gs-mode-hint{font-size:11px;opacity:.85}",
+    /* 预算档菜单（v1.14.0：胶囊从"点一下轮转"改成"点开选"，省得猜现在轮到哪一档了） */
+    ".gs-dock-mode{position:relative}",
+    /* v1.15.2：档位菜单挂到统一胶囊容器里，容器是圆角卡 —— 用 fixed 定位，菜单才不会被卡片边界裁掉 */
+    ".gs-mode-menu{position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);z-index:40;display:flex;flex-direction:column;gap:2px;min-width:216px;padding:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-l1,#fff));box-shadow:0 10px 28px rgba(0,0,0,.18)}",
+    ".gs-mode-item{display:flex;align-items:baseline;gap:8px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:0 0;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer}",
+    ".gs-mode-item:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+    ".gs-mode-item b{font-size:13px}",
+    ".gs-mode-item span{color:var(--dsw-alias-label-tertiary)}",
+    ".gs-mode-item i{margin-left:auto;font-style:normal;font-size:11px;color:var(--dsw-alias-label-caption)}",
+    ".gs-mode-item-on{background:var(--dsw-alias-interactive-bg-hover)}",
+    /* 上下文构成明细（v1.14.0）：这些 token 是谁占的 —— 只说"用了多少"没法指导怎么省 */
+    ".gs-dock-parts{display:flex;flex-direction:column;gap:4px;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
+    ".gs-dock-parts-toggle{align-self:flex-start;padding:0;border:0;background:0 0;color:inherit;font-family:inherit;font-size:12px;cursor:pointer}",
+    ".gs-dock-parts-toggle:hover{color:var(--dsw-alias-label-primary);text-decoration:underline}",
+    ".gs-parts-list{display:flex;flex-direction:column;gap:4px;margin-top:2px}",
+    ".gs-parts-row{display:grid;grid-template-columns:minmax(80px,30%) 1fr auto;align-items:center;gap:8px}",
+    ".gs-parts-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ".gs-parts-track{display:block;height:6px;border-radius:999px;background:rgba(127,127,127,.22);overflow:hidden}",
+    // v1.15.3：每行一条自己的颜色（--gs-part-color），缺省才回落到进度条色带 --gs-scale。
+    ".gs-parts-fill{display:block;height:100%;border-radius:999px;background:var(--gs-part-color,var(--gs-scale))}",
+    ".gs-parts-num{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}",
+    /* 到线建议（v1.14.0）：按客观计数说一句"该抬线"或"该降档"，按钮就在旁边 */
+    ".gs-dock-suggest{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
     ".gs-fold{align-items:center;gap:6px;display:flex;cursor:pointer;user-select:none}",
     ".gs-fold-caret{color:var(--dsw-alias-label-tertiary);font-size:10px;width:10px}",
     ".gs-fold-sum{color:var(--dsw-alias-label-caption);margin-left:auto;font-size:12px}",
@@ -1017,7 +1091,7 @@ function normalizeLine(raw, fallback) {
 function sanitizeLegacyLines(raw) {
   if (!Array.isArray(raw)) return [];
   var out = [];
-  for (var i = 0; i < raw.length && out.length < 30; i += 1) {
+  for (var i = 0; i < raw.length && out.length < LEGACY_LINES_MAX; i += 1) {
     var item = raw[i];
     if (item === null || typeof item !== "object") continue;
     var text = typeof item.text === "string" ? item.text.slice(0, TEXT_LIMIT) : "";
@@ -1190,11 +1264,15 @@ function schemeOf(id) {
  * 没有 group 的项归入"其它"；已有项的顺序即分组出现的顺序，不额外排序。
  * @returns {Array} React 子节点数组。
  */
-function schemeOptions() {
+function schemeOptions(showAll, current) {
+  // 精选：默认只列常用几套（当前用的那套永远保留，否则下拉会显示成别的配色，像被改了设置）。
+  var list = showAll === true
+    ? BAR_SCHEMES.slice()
+    : BAR_SCHEMES.filter(function (item) { return PRIME_SCHEMES.indexOf(item.id) !== -1 || item.id === current; });
   var groups = [];
   var index = {};
-  for (var i = 0; i < BAR_SCHEMES.length; i += 1) {
-    var item = BAR_SCHEMES[i];
+  for (var i = 0; i < list.length; i += 1) {
+    var item = list[i];
     var name = typeof item.group === "string" && item.group.length > 0 ? item.group : "其它";
     if (index[name] === undefined) {
       index[name] = groups.length;
@@ -1258,10 +1336,32 @@ function barScale(warnPercent, criticalPercent, colors, alpha) {
     "%, " + stop(palette[2]) + " " + critical + "%, " + stop(palette[2]) + " 100%)";
 }
 
-/* ─── 进度条外观偏好（纯前端，存浏览器本地；改完立即生效、不用重启） ──── */
+/**
+ * 「上下文构成」每行专属的颜色（v1.15.3）。
+ *
+ * 为什么需要：构成条原本用 `--gs-scale`（绿→黄→红那条进度条色带），到线时又整条横幅变红底白字，
+ * 于是 CSS 里把填充改成 `currentColor` = 纯白 —— 红底上一排白条，谁大谁小只能读数字，看不出"颜色"。
+ * 现在按行号给一个固定色：这些色在浅底和红底（#d93026）上都够亮够分得清，不再随主题/皮肤变化。
+ */
+var PART_COLORS = [
+  "#f59e0b", "#0ea5e9", "#22c55e", "#ec4899", "#8b5cf6", "#06b6d4",
+  "#fb923c", "#a3e635", "#818cf8", "#14b8a6", "#f472b6", "#eab308"
+];
 
+/* ─── 进度条外观偏好（纯前端，存浏览器本地；改完立即生效、不用重启） ──── */
 var UI_KEY = "gs.signoff.ui";
-var UI_DEFAULTS = { barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false, scheme: "classic", display: "full", showTime: true, meterMode: "budget", budgetMode: "daily", budgetWarn: 75000, budgetCritical: 110000 };
+var UI_DEFAULTS = {
+  barHeight: 9, marker: "🚗", markerImage: "", markerScale: 12, facing: "right", imageFlipped: false,
+  scheme: "classic", display: "full", showTime: true, meterMode: "budget", budgetMode: "daily",
+  budgetWarn: 75000, budgetCritical: 110000,
+  // 花费与上下文（v1.14.0）：数据都来自本机台账，不联网。
+  showCost: true,          // 进度条那行显示"本条会话 ≈¥0.42"
+  showParts: false,        // 默认收起"上下文构成明细"面板，点一下才展开
+  autoSuggest: true,       // 到线时按客观计数提示"建议切大任务/可以降档"
+  notifyOnLine: false,     // 到线时发浏览器系统通知（要用户授权，故默认关）
+  advOptions: false,       // 长尾选项（40 动效 / 37 配色 / 30 车型）默认收起来
+  showDiag: false          // 诊断分区只在主动打开时出现
+};
 /**
  * 预算模式（=「大任务模式」）：三档预设 + 自定义，只决定黄线/红线画在哪。
  *
@@ -1285,8 +1385,7 @@ var BAR_HEIGHTS = [6, 9, 12, 16];
 var MARKER_SCALES = [
   { value: 6, label: "小" },
   { value: 12, label: "中" },
-  { value: 20, label: "大" },
-  { value: 30, label: "特大" }
+  { value: 20, label: "大" }
 ];
 var BAR_MARKERS = [
   { value: "🚗", label: "🚗", name: "轿车" },
@@ -1321,6 +1420,30 @@ var BAR_MARKERS = [
   { value: "⭐", label: "⭐", name: "星星" },
   { value: "", label: "无" }
 ];
+/**
+ * 长尾选项的"精选"集合（v1.14.0）。
+ *
+ * 为什么要有它：40 种动效 / 37 套配色 / 30 种车型全铺在设置页里，选项比需求多一个数量级，
+ * 挑一个动效要在下拉里翻半天，还看不清"当前到底设了什么"。默认只露这几个常用的，
+ * 想看全部时点旁边的「全部」按钮（存 gs.signoff.ui.advOptions，一次打开就一直开着）。
+ */
+var PRIME_ANIMATIONS = ["none", "fade", "slide", "shine", "glow", "pulse", "charbounce", "rainbow"];
+var PRIME_SCHEMES = ["classic", "bud", "sakura", "candy", "ocean", "ink"];
+var PRIME_MARKERS = ["🚗", "🚙", "🚀", "✈️", "⭐", "🐢", ""];
+/**
+ * 按"精选 / 全部"裁剪一组选项；当前值永远保留（否则下拉会显示成别的档，像被改了设置）。
+ * @param {Array} all 全部选项。
+ * @param {Array<string>} prime 精选值。
+ * @param {boolean} showAll 是否显示全部。
+ * @param {*} current 当前值（value 或 value 的变体，如 __none__）。
+ */
+function pickOptions(all, prime, showAll, current) {
+  if (showAll === true) return all.slice();
+  var kept = all.filter(function (item) { return prime.indexOf(item.value) !== -1; });
+  var extra = all.filter(function (item) { return prime.indexOf(item.value) === -1 && item.value === current; });
+  return kept.concat(extra);
+}
+
 /** 自定义小车图片的大小上限（localStorage 存 base64，留足余量）。 */
 var MARKER_IMAGE_BYTES = 250 * 1024;
 /**
@@ -1353,6 +1476,13 @@ try {
       uiState.budgetMode = normalizeBudgetMode(savedUi.budgetMode) === "" ? DEFAULT_BUDGET_MODE : savedUi.budgetMode;
     }
     if (typeof savedUi.markerImage === "string" && savedUi.markerImage.length < 400 * 1024) uiState.markerImage = savedUi.markerImage;
+    // 花费 / 明细 / 建议 / 通知 / 长尾选项 / 诊断：只认布尔，认不出来就用默认值。
+    if (typeof savedUi.showCost === "boolean") uiState.showCost = savedUi.showCost;
+    if (typeof savedUi.showParts === "boolean") uiState.showParts = savedUi.showParts;
+    if (typeof savedUi.autoSuggest === "boolean") uiState.autoSuggest = savedUi.autoSuggest;
+    if (typeof savedUi.notifyOnLine === "boolean") uiState.notifyOnLine = savedUi.notifyOnLine;
+    if (typeof savedUi.advOptions === "boolean") uiState.advOptions = savedUi.advOptions;
+    if (typeof savedUi.showDiag === "boolean") uiState.showDiag = savedUi.showDiag;
   }
 } catch (error) { /* 隐私模式等读不到就用默认值 */ }
 
@@ -1449,6 +1579,7 @@ var SECTION_NAV = [
   { key: "scenes", label: "场景" },
   { key: "alert", label: "提醒" },
   { key: "bar", label: "进度条" },
+  { key: "cost", label: "成本" },
   { key: "legacy", label: "旧文案" },
   { key: "diag", label: "诊断" }
 ];
@@ -2226,6 +2357,20 @@ function Editor() {
     })), key, wide);
   }
 
+  /**
+   * 长尾下拉（v1.14.0）：默认只列"精选"几项，末尾挂一条「▾ 显示全部（N 项）」——
+   * 选中它只把 advOptions 打开、不改变当前值，下拉立刻变全量。这样 40 动效 / 30 车型
+   * 不会再一上来就糊满整屏，想要冷门选项也就多点一下。
+   */
+  function pickedCell(label, all, prime, value, onChange, key, wide) {
+    var list = pickOptions(all, prime, ui.advOptions === true, value);
+    if (ui.advOptions !== true) list = list.concat([{ value: "__more__", label: "▾ 显示全部（" + all.length + " 项）" }]);
+    return selectCell(label, list, value, function (next) {
+      if (next === "__more__") { setUiPrefs({ advOptions: true }); return; }
+      onChange(next);
+    }, key, wide);
+  }
+
   /** 滑杆 + 数字输入（数字可直接填）。 */
   function sliderCell(label, value, min, max, step, suffix, onChange, key) {
     return cell(label, React.createElement("span", { className: "gs-cellgroup" },
@@ -2436,6 +2581,23 @@ function Editor() {
       })
       .catch(function () { add(false, "自检请求失败（服务可能刚重启或没在跑）"); report(); });
   }
+
+  // 本地外观偏好提前取：下面「动效 / 配色 / 小车」那些"精选 vs 全部"的下拉要用它
+  // （原来只在进度条分区里取，位置太靠后）。
+  var ui = useUiPrefs();
+  // 花费台账（v1.14.0）：跨会话的今日 / 近 7 天 + 最贵几条，数据来自本机 usage-ledger.json。
+  var costPair = React.useState(null);
+  var costInfo = costPair[0];
+  var setCostInfo = costPair[1];
+  React.useEffect(function () {
+    var alive = true;
+    function pull() {
+      fetchCostInfo("", 7).then(function (data) { if (alive && data !== null && data !== undefined) setCostInfo(data); });
+    }
+    pull();
+    var timer = window.setInterval(pull, 120000);
+    return function () { alive = false; window.clearInterval(timer); };
+  }, []);
 
   var body = [
     // 顶部：标签页 + 状态 + 实时预览，一起吸顶。这样往下调参数时预览始终可见，
@@ -2673,7 +2835,7 @@ function Editor() {
             onChange: function (event) { setLine({ color: event.target.value }); }
           })
         ), "color", true),
-        selectCell("动效", ANIMATIONS, line.animation,
+        pickedCell("动效", ANIMATIONS, PRIME_ANIMATIONS, line.animation,
           function (value) { setLine({ animation: value }); }, "animation"),
         sliderCell("速度", line.animSpeed, 1, 4, 1, "×", function (value) { setLine({ animSpeed: value }); }, "animSpeed"),
         React.createElement("div", { className: "gs-cell gs-cell-wide", key: "image" },
@@ -2996,7 +3158,7 @@ function Editor() {
           type: "button", className: "gs-btn",
           onClick: function () { patchTop({ legacyLines: (draft.legacyLines || []).concat([{ text: "", style: "greeting" }]) }); }
         }, "+ 添加一条旧文案"),
-        React.createElement("span", { className: "gs-hint" }, "最多 30 条；空行会拦住保存，填上或删掉即可")
+        React.createElement("span", { className: "gs-hint" }, "最多 " + LEGACY_LINES_MAX + " 条；空行会拦住保存，填上或删掉即可")
       ),
       {
         defaultOpen: false,
@@ -3006,7 +3168,7 @@ function Editor() {
   ];
 
   // 进度条外观：纯前端偏好（存浏览器本地），选一下立即生效，不用保存、不用重启。
-  var ui = useUiPrefs();
+  // （ui 已在 body 构造前取好：外观 / 进度条分区的"精选 vs 全部"下拉都要用它。）
   body.push(section("进度条外观（立即生效，存浏览器本地）", "bar", grid("bar-grid", [
       selectCell("形态", [
         { value: "full", label: "完整（进度条 + 小车 + 百分比）" },
@@ -3015,7 +3177,9 @@ function Editor() {
       ], ui.display, function (value) { setUiPrefs({ display: value }); }, "display", true),
       selectCell("粗细", BAR_HEIGHTS.map(function (h) { return { value: h, label: h + "px" }; }), ui.barHeight,
         function (value) { setUiPrefs({ barHeight: Number(value) }); }, "barHeight"),
-      selectCell("大小", MARKER_SCALES, ui.markerScale,
+      // 「大小 + 朝向」合并成一项（v1.14.0）：朝向固定"车头向右"（天生朝左的车型自动镜像），
+      // 多给一个"原样"开关只是多一格设置、多一个没意义的选择。
+      selectCell("尺寸", MARKER_SCALES, ui.markerScale,
         function (value) { setUiPrefs({ markerScale: Number(value) }); }, "markerScale"),
       cell("配色", React.createElement("span", { className: "gs-cellgroup" },
         React.createElement("span", {
@@ -3023,16 +3187,17 @@ function Editor() {
           style: { background: "linear-gradient(90deg," + schemeOf(ui.scheme).colors[0] + "," + schemeOf(ui.scheme).colors[1] + "," + schemeOf(ui.scheme).colors[2] + ")" }
         }),
         React.createElement("select", {
-          className: "gs-input gs-select", value: ui.scheme, title: "共 " + BAR_SCHEMES.length + " 套配色",
+          className: "gs-input gs-select", value: ui.scheme,
+          title: "共 " + BAR_SCHEMES.length + " 套配色（默认只列常用 " + PRIME_SCHEMES.length + " 套）",
           onChange: function (event) { setUiPrefs({ scheme: event.target.value }); }
-        }, schemeOptions())
+        }, schemeOptions(ui.advOptions === true, ui.scheme)),
+        ui.advOptions === true ? null : React.createElement("button", {
+          type: "button", className: "gs-btn", title: "显示全部 " + BAR_SCHEMES.length + " 套配色",
+          onClick: function () { setUiPrefs({ advOptions: true }); }
+        }, "全部 " + BAR_SCHEMES.length)
       ), "scheme"),
-      selectCell("朝向", [
-        { value: "right", label: "车头向右 →" },
-        { value: "native", label: "原样" }
-      ], ui.facing, function (value) { setUiPrefs({ facing: value }); }, "facing"),
       selectCell("时间显示", [
-        { value: "on", label: "显示（已聊多久 + 还能聊多久）" },
+        { value: "on", label: "显示（已聊多久 + 实测速率）" },
         { value: "off", label: "不显示" }
       ], ui.showTime === false ? "off" : "on",
         function (value) { setUiPrefs({ showTime: value !== "off" }); }, "showTime", true),
@@ -3072,14 +3237,20 @@ function Editor() {
           "预算口径下 100% = 你当前档位的红线（默认「日常」：7.5 万 tok 变黄、11 万 tok 整条变红），条下弹红底大字「🚨 该开新会话了」，"
           + "浏览器标签页标题也会加 🚨 —— 不用盯着数字看。超了会显示「超 N 倍」。想回到以前那种「占模型窗口 24%」就切上面的口径。")
       ),
+      // 小车：默认只列 7 个常见车型，其余收进「显示全部」（v1.14.0）。
       selectCell("小车", (function () {
-        var options = BAR_MARKERS.map(function (item) {
+        var all = BAR_MARKERS.map(function (item) {
           return { value: item.value === "" ? "__none__" : item.value, label: item.label === "" ? "无" : (item.label + " " + item.name) };
         });
-        if (ui.markerImage !== "") options = options.concat([{ value: "__custom__", label: "自定义图片" }]);
-        return options;
+        var current = ui.markerImage !== "" ? "__custom__" : (ui.marker === "" ? "__none__" : ui.marker);
+        var prime = PRIME_MARKERS.map(function (one) { return one === "" ? "__none__" : one; });
+        var list = pickOptions(all, prime, ui.advOptions === true, current);
+        if (ui.advOptions !== true) list = list.concat([{ value: "__more__", label: "▾ 显示全部（" + all.length + " 种）" }]);
+        if (ui.markerImage !== "") list = list.concat([{ value: "__custom__", label: "自定义图片" }]);
+        return list;
       })(), ui.markerImage !== "" ? "__custom__" : (ui.marker === "" ? "__none__" : ui.marker),
         function (value) {
+          if (value === "__more__") { setUiPrefs({ advOptions: true }); return; }
           if (value === "__custom__") return;                       // 只是显示当前状态，不改变
           if (value === "__none__") { setUiPrefs({ marker: "", markerImage: "" }); return; }
           setUiPrefs({ marker: value, markerImage: "" });
@@ -3116,11 +3287,89 @@ function Editor() {
         )
       )
     ]), { defaultOpen: false, summary: "配色 " + schemeOf(ui.scheme).label + " · " + (ui.marker === "" && ui.markerImage === "" ? "无小车" : "有车标") }));
+  // 花费与上下文（v1.14.0）：把"钱花在哪、上下文被谁撑大"摆到设置页，跨会话台账也在这。
+  // 数据全部读本机文件（usage-ledger.json），不联网；宿主半是旧版就整段显示成"读不到"。
+  var costHint = costInfo === null || costInfo === undefined
+    ? "还没读到台账（宿主半是旧版时这里会一直空着，不影响进度条）"
+    : "今天 ≈" + formatCny(costInfo.today !== null && costInfo.today !== undefined ? costInfo.today.costCNY : 0)
+      + " · 近 " + String(costInfo.week !== null && costInfo.week !== undefined && typeof costInfo.week.days === "number" ? costInfo.week.days : 7) + " 天 ≈"
+      + formatCny(costInfo.week !== null && costInfo.week !== undefined ? costInfo.week.costCNY : 0)
+      + " · 单价：未命中 ¥1/M、缓存命中 ¥0.02/M、输出 ¥4/M。"
+      + "留意输出价是缓存读的 200 倍 —— 少让我啰嗦，比省那点上下文更省钱。";
+  var topList = costInfo !== null && costInfo !== undefined && Array.isArray(costInfo.top) ? costInfo.top : [];
+  var topHint = topList.length === 0 ? ""
+    : topList.map(function (item, index) {
+        var name = typeof item.title === "string" && item.title.length > 0 ? item.title : String(item.sessionId === undefined ? "" : item.sessionId).slice(0, 8);
+        return (index + 1) + ") " + name + " " + formatCny(item.costCNY);
+      }).join(" · ");
+  body.push(section("花费与上下文（读本机台账，不联网）", "cost", grid("cost-grid", [
+      React.createElement("div", { className: "gs-cell gs-cell-wide", key: "costSum" },
+        React.createElement("span", { className: "gs-label" }, "花了多少"),
+        React.createElement("span", { className: "gs-hint" }, costHint)
+      ),
+      topHint === "" ? null : React.createElement("div", { className: "gs-cell gs-cell-wide", key: "costTop" },
+        React.createElement("span", { className: "gs-label" }, "最贵会话"),
+        React.createElement("span", { className: "gs-hint" }, topHint)
+      ),
+      selectCell("显示花费", [
+        { value: "on", label: "进度条那行写 ≈¥…" },
+        { value: "off", label: "不显示" }
+      ], ui.showCost === false ? "off" : "on",
+        function (value) { setUiPrefs({ showCost: value !== "off" }); }, "showCost"),
+      selectCell("上下文明细", [
+        { value: "off", label: "默认收起（推荐）" },
+        { value: "on", label: "默认展开" }
+      ], ui.showParts === true ? "on" : "off",
+        function (value) { setUiPrefs({ showParts: value === "on" }); }, "showParts"),
+      selectCell("档位建议", [
+        { value: "on", label: "该抬线/该降档时提一句" },
+        { value: "off", label: "不提示" }
+      ], ui.autoSuggest === false ? "off" : "on",
+        function (value) { setUiPrefs({ autoSuggest: value !== "off" }); }, "autoSuggest", true),
+      selectCell("系统通知", [
+        { value: "off", label: "不通知" },
+        { value: "on", label: "到线时发浏览器通知" }
+      ], ui.notifyOnLine === true ? "on" : "off",
+        function (value) {
+          if (value !== "on") { setUiPrefs({ notifyOnLine: false }); return; }
+          // 要浏览器授权才发得出去：先问权限，拿到才把开关打开（拿不到就如实说明，不留一个假开关）。
+          try {
+            if (typeof window.Notification !== "function") { setNotice("这个浏览器不支持系统通知"); return; }
+            if (window.Notification.permission === "granted") { setUiPrefs({ notifyOnLine: true }); return; }
+            window.Notification.requestPermission().then(function (result) {
+              setUiPrefs({ notifyOnLine: result === "granted" });
+              if (result !== "granted") setNotice("浏览器没给通知权限，系统通知没打开");
+            });
+            return;
+          } catch (error) {
+            setNotice("申请通知权限失败：" + String(error !== null && error !== undefined && error.message ? error.message : error));
+          }
+        }, "notifyOnLine", true),
+      selectCell("选项范围", [
+        { value: "prime", label: "精选（推荐）" },
+        { value: "all", label: "全部（动效 / 配色 / 车型）" }
+      ], ui.advOptions === true ? "all" : "prime",
+        function (value) { setUiPrefs({ advOptions: value === "all" }); }, "advOptions", true),
+      React.createElement("div", { className: "gs-cell gs-cell-wide", key: "diagToggle" },
+        React.createElement("span", { className: "gs-label" }, "诊断"),
+        React.createElement("button", {
+          type: "button", className: "gs-btn",
+          onClick: function () { setUiPrefs({ showDiag: ui.showDiag !== true }); }
+        }, ui.showDiag === true ? "隐藏诊断分区" : "显示诊断分区（排障用）")
+      )
+    ]), {
+      defaultOpen: false,
+      summary: costInfo === null || costInfo === undefined
+        ? "读不到台账"
+        : "今日 ≈" + formatCny(costInfo.today !== null && costInfo.today !== undefined ? costInfo.today.costCNY : 0)
+    }));
   if (error !== "") body.push(React.createElement("div", { className: "gs-hint gs-hint-error", key: "error", role: "alert" }, error));
   else if (invalid !== null) body.push(React.createElement("div", { className: "gs-hint gs-hint-error", key: "invalid", role: "alert" }, "还差一步：" + invalid));
   if (notice !== "") body.push(React.createElement("div", { className: "gs-hint", key: "notice" }, notice));
-  // 诊断：自查用。样式没贴上的时候，先看这里的"命中行数"和"跳过非助手"。
-  body.push(section("诊断（样式没生效时先看这里）", "diag",
+  // 诊断：自查用（样式没贴上时看"命中行数/跳过非助手"）。
+  // v1.14.0 起默认**不显示**——它对日常使用是纯噪音，只在主动打开时出现：
+  // 底部那行「显示诊断分区」小字，或者 localStorage 里把 gs.signoff.ui.showDiag 设为 true。
+  if (ui.showDiag === true) body.push(section("诊断（样式没生效时先看这里）", "diag",
     React.createElement("div", { className: "gs-diag" },
       React.createElement("div", null, "插件版本：v" + CLIENT_VERSION + "（浏览器半）"),
       React.createElement("div", null, "配置文件：" + (store.path || "（未知，宿主半可能没加载）")),
@@ -3245,19 +3494,49 @@ function formatClock(ms) {
 
 /**
  * 用采样点算"每分钟烧掉多少 token"。
- * 采样点形如 `{t, used}`，按时间升序；跨度不足 1 分钟、或读数没有净增长时返回 null
+ * 采样点形如 `{t, used}`，按时间升序；跨度不足 minSpanMs、或读数没有净增长时返回 null
  * （宁可不给估计，也不要给一个假数字）。
+ * v1.18.0：minSpanMs 可调（默认 60 秒）。进度条上放宽到 20 秒 —— 聊得快的会话两轮之间
+ * 常常不到一分钟，卡 60 秒会让"实测速率"一直显示 "—"（发哥反馈过这个）。
  * @param {Array} samples 采样点。
+ * @param {number} [minSpanMs] 最小时间跨度（毫秒），缺省 60000。
  * @returns {number|null} token/分钟。
  */
-function tokensPerMinute(samples) {
+function tokensPerMinute(samples, minSpanMs) {
   if (!Array.isArray(samples) || samples.length < 2) return null;
+  var floor = typeof minSpanMs === "number" && isFinite(minSpanMs) && minSpanMs > 0 ? minSpanMs : 60000;
   var first = samples[0];
   var last = samples[samples.length - 1];
   if (first === null || last === null || typeof first.t !== "number" || typeof last.t !== "number") return null;
   var spanMs = last.t - first.t;
-  if (!(spanMs >= 60000)) return null;
+  if (!(spanMs >= floor)) return null;
   var delta = Number(last.used) - Number(first.used);
+  if (!(delta > 0)) return null;
+  return delta / (spanMs / 60000);
+}
+
+/** 速率的最小时间跨度（进度条用）：20 秒。 */
+var RATE_MIN_SPAN_MS = 20000;
+
+/**
+ * 时间轴采样不够时（刚刷新页面 / 才聊了不到 20 秒）的退路：拿"最近两次轮次跃升"直接算斜率。
+ * 跃升点和增量都是真发生过的数，比不给强；但只认跨度 ≥ minSpanMs 的那一对，避免噪声。
+ * @param {Array<number>} jumpTimes 每次跃升的时刻（升序）。
+ * @param {Array<number>} jumps 每次跃升的 token 增量（与 jumpTimes 尾部对齐）。
+ * @param {number} [minSpanMs] 最小跨度，缺省 20000。
+ * @returns {number|null} token/分钟。
+ */
+function rateFromJumps(jumpTimes, jumps, minSpanMs) {
+  if (!Array.isArray(jumpTimes) || !Array.isArray(jumps)) return null;
+  if (jumpTimes.length < 2 || jumps.length < 2) return null;
+  var floor = typeof minSpanMs === "number" && isFinite(minSpanMs) && minSpanMs > 0 ? minSpanMs : RATE_MIN_SPAN_MS;
+  var lastT = jumpTimes[jumpTimes.length - 1];
+  var prevT = jumpTimes[jumpTimes.length - 2];
+  var lastJump = jumps[jumps.length - 1];
+  if (typeof lastT !== "number" || typeof prevT !== "number" || !isFinite(lastT) || !isFinite(prevT)) return null;
+  var spanMs = lastT - prevT;
+  if (!(spanMs >= floor)) return null;
+  var delta = Number(lastJump);
   if (!(delta > 0)) return null;
   return delta / (spanMs / 60000);
 }
@@ -3302,8 +3581,16 @@ function averageTurnMs(times) {
 /* ─── 会话开始时间：宿主半给（浏览器半看不到 session.header.createdAt） ──── */
 
 var SESSION_API = API + "/session";
+// v1.14.0：花费与上下文明细两个只读接口（宿主半读本机台账/projcache，不联网）。
+var CONTEXT_API = API + "/context";
+var COST_API = API + "/cost";
 /** 会话信息缓存：同一会话一分钟内不重复问。 */
 var sessionInfoCache = { key: "", at: 0, data: null };
+/** 明细/花费的缓存（v1.14.0）：这两样都来自磁盘文件，没必要每次重渲染都去问一遍。 */
+var contextCache = { key: "", at: 0, data: null };
+var costCache = { key: "", at: 0, data: null };
+var CONTEXT_TTL_MS = 45000;
+var COST_TTL_MS = 60000;
 /** 拿不到宿主半答案时的本地兜底（按会话 id 记"第一次见到它的时刻"，刷新页面不丢）。 */
 var SESSION_START_KEY = "gs.signoff.starts";
 
@@ -3330,6 +3617,152 @@ function localSessionStart(sessionId) {
   return now;
 }
 
+/* ─── 活跃时长（v1.18.0）：只统计"这个会话真正在聊的时间" ────────────────────
+ * 为什么不再直接拿 session.header.createdAt 去减：
+ *   ① 那是"会话文件的创建时间"：隔天接着聊同一条会话时，中间十几个小时的断档也会被算进去；
+ *   ② 宿主半在不知道"你看的是哪条会话"时会退回它自己记的上一个会话，于是把**上一次**的
+ *      创建时间给过来 —— 直接信它，新会话就会顶着上次的已聊时长（发哥 2026-09-20 报的问题）。
+ * 所以改成按会话 id 各自记账（绝不跨会话），两次心跳间隔超过 idleMaxMs 就当断档、不累加。
+ */
+var ACTIVE_KEY_PREFIX = "gs.signoff.active.";
+/** 断档阈值：心跳间隔超过这个数就不算"一直在聊"。 */
+var ACTIVE_IDLE_MAX_MS = 5 * 60000;
+/** 新会话判定：创建时间距今不超过这个数，才敢把"创建到现在"当作已聊时长。 */
+var ACTIVE_FRESH_MAX_MS = 30 * 60000;
+
+/**
+ * 记账一步：把"从上次心跳到现在"的这段时间累进本会话的活跃时长（纯函数，便于单测）。
+ * 首次见到某个会话时，只有"刚创建不久"的会话才用它创建到现在的时间做起点；
+ * 恢复的旧会话（创建于很久以前）从 0 起算 —— 宁可少算，也不把几小时的断档吞进来。
+ * @param {{totalMs:number,lastAt:number}|null} prev 上一次的记账（lastAt=0 表示首次见到）。
+ * @param {number} now 现在（Unix 毫秒）。
+ * @param {number|null} createdAt 宿主半给的会话创建时间；不确定是当前会话时传 null。
+ * @param {{idleMaxMs?:number,freshMaxMs?:number}} [opts] 阈值覆盖（测试用）。
+ * @returns {{totalMs:number,lastAt:number}} 新的记账。
+ */
+function activeElapsed(prev, now, createdAt, opts) {
+  var o = opts === undefined || opts === null ? {} : opts;
+  var idleMax = typeof o.idleMaxMs === "number" && isFinite(o.idleMaxMs) && o.idleMaxMs > 0 ? o.idleMaxMs : ACTIVE_IDLE_MAX_MS;
+  var freshMax = typeof o.freshMaxMs === "number" && isFinite(o.freshMaxMs) && o.freshMaxMs > 0 ? o.freshMaxMs : ACTIVE_FRESH_MAX_MS;
+  var total = prev !== null && prev !== undefined && typeof prev.totalMs === "number" && isFinite(prev.totalMs) && prev.totalMs > 0
+    ? prev.totalMs : 0;
+  var lastAt = prev !== null && prev !== undefined && typeof prev.lastAt === "number" && isFinite(prev.lastAt) && prev.lastAt > 0
+    ? prev.lastAt : 0;
+  if (typeof now !== "number" || !isFinite(now) || now <= 0) return { totalMs: total, lastAt: lastAt };
+  if (lastAt > 0) {
+    var gap = now - lastAt;
+    if (gap > 0 && gap <= idleMax) total += gap;
+    return { totalMs: total, lastAt: now };
+  }
+  var created = typeof createdAt === "number" && isFinite(createdAt) && createdAt > 0 ? createdAt : 0;
+  if (created > 0 && now > created && now - created <= freshMax) total = now - created;
+  return { totalMs: total, lastAt: now };
+}
+
+/**
+ * 读某个会话的活跃记账（按会话 id 分开存，互不串档）。
+ * @param {string} sessionId 会话 id。
+ * @returns {{totalMs:number,lastAt:number}|null} 没记过返回 null。
+ */
+function readActiveRecord(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+  try {
+    var raw = window.localStorage.getItem(ACTIVE_KEY_PREFIX + sessionId);
+    if (raw === null) return null;
+    var parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object") return null;
+    var totalMs = typeof parsed.totalMs === "number" && isFinite(parsed.totalMs) && parsed.totalMs > 0 ? parsed.totalMs : 0;
+    var lastAt = typeof parsed.lastAt === "number" && isFinite(parsed.lastAt) && parsed.lastAt > 0 ? parsed.lastAt : 0;
+    if (totalMs === 0 && lastAt === 0) return null;
+    return { totalMs: totalMs, lastAt: lastAt };
+  } catch (error) { return null; }
+}
+
+/**
+ * 写某个会话的活跃记账。
+ * @param {string} sessionId 会话 id。
+ * @param {number} totalMs 累计活跃毫秒。
+ * @param {number} lastAt 上次心跳时刻。
+ * @returns {void}
+ */
+function writeActiveRecord(sessionId, totalMs, lastAt) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return;
+  var total = typeof totalMs === "number" && isFinite(totalMs) && totalMs > 0 ? Math.round(totalMs) : 0;
+  var last = typeof lastAt === "number" && isFinite(lastAt) && lastAt > 0 ? Math.round(lastAt) : 0;
+  if (total === 0 && last === 0) return;
+  try { window.localStorage.setItem(ACTIVE_KEY_PREFIX + sessionId, JSON.stringify({ totalMs: total, lastAt: last })); } catch (error) { /* 隐私模式：忽略 */ }
+}
+
+/* ─── 读数采样账本（v1.18.0）：按会话 id 存，刷新页面不清零 ──────────────────
+ * 以前 samples/jumps 只活在内存里，刷新一次就归零 → "实测速率"和"到线约还有"要重新等
+ * 一轮读数才出现，看着就像功能坏了。现在按会话 id 落盘（互不串档），刷新后立刻能算。
+ */
+var SAMPLER_KEY_PREFIX = "gs.signoff.sampler.";
+
+/** 一个空的采样账本。 */
+function emptySampler() {
+  return { last: null, jumps: [], samples: [], jumpTimes: [], lastUsedAt: 0, savedAt: 0 };
+}
+
+/**
+ * 读某个会话的采样账本；坏数据一律丢掉当空账本（宁可没有，也不要 NaN 数字）。
+ * @param {string} sessionId 会话 id。
+ * @returns {Object} 采样账本。
+ */
+function readSamplerRecord(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return emptySampler();
+  var parsed = null;
+  try {
+    var raw = window.localStorage.getItem(SAMPLER_KEY_PREFIX + sessionId);
+    parsed = raw === null ? null : JSON.parse(raw);
+  } catch (error) { return emptySampler(); }
+  if (parsed === null || typeof parsed !== "object") return emptySampler();
+  var base = emptySampler();
+  if (Array.isArray(parsed.samples)) {
+    for (var i = 0; i < parsed.samples.length; i += 1) {
+      var point = parsed.samples[i];
+      if (point !== null && typeof point === "object" && typeof point.t === "number" && isFinite(point.t)
+        && typeof point.used === "number" && isFinite(point.used)) base.samples.push({ t: point.t, used: point.used });
+    }
+    if (base.samples.length > SAMPLE_LIMIT) base.samples = base.samples.slice(-SAMPLE_LIMIT);
+  }
+  if (Array.isArray(parsed.jumps)) {
+    for (var j = 0; j < parsed.jumps.length; j += 1) {
+      if (typeof parsed.jumps[j] === "number" && isFinite(parsed.jumps[j]) && parsed.jumps[j] > 0) base.jumps.push(parsed.jumps[j]);
+    }
+    if (base.jumps.length > 6) base.jumps = base.jumps.slice(-6);
+  }
+  if (Array.isArray(parsed.jumpTimes)) {
+    for (var k = 0; k < parsed.jumpTimes.length; k += 1) {
+      if (typeof parsed.jumpTimes[k] === "number" && isFinite(parsed.jumpTimes[k]) && parsed.jumpTimes[k] > 0) base.jumpTimes.push(parsed.jumpTimes[k]);
+    }
+    if (base.jumpTimes.length > 12) base.jumpTimes = base.jumpTimes.slice(-12);
+  }
+  if (typeof parsed.last === "number" && isFinite(parsed.last) && parsed.last >= 0) base.last = parsed.last;
+  if (typeof parsed.lastUsedAt === "number" && isFinite(parsed.lastUsedAt) && parsed.lastUsedAt > 0) base.lastUsedAt = parsed.lastUsedAt;
+  return base;
+}
+
+/**
+ * 写某个会话的采样账本。
+ * @param {string} sessionId 会话 id。
+ * @param {Object} sampler 账本。
+ * @returns {void}
+ */
+function writeSamplerRecord(sessionId, sampler) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return;
+  if (sampler === null || sampler === undefined || typeof sampler !== "object") return;
+  try {
+    window.localStorage.setItem(SAMPLER_KEY_PREFIX + sessionId, JSON.stringify({
+      last: typeof sampler.last === "number" && isFinite(sampler.last) ? sampler.last : null,
+      jumps: Array.isArray(sampler.jumps) ? sampler.jumps.slice(-6) : [],
+      samples: Array.isArray(sampler.samples) ? sampler.samples.slice(-SAMPLE_LIMIT) : [],
+      jumpTimes: Array.isArray(sampler.jumpTimes) ? sampler.jumpTimes.slice(-12) : [],
+      lastUsedAt: typeof sampler.lastUsedAt === "number" && isFinite(sampler.lastUsedAt) ? sampler.lastUsedAt : 0
+    }));
+  } catch (error) { /* 隐私模式 / 配额满：忽略，功能照常但刷新后会归零 */ }
+}
+
 /**
  * 问宿主半要"这个会话什么时候开始的 + 上一轮统计"。
  * 失败（插件宿主半没加载 / 网络抖动）时返回上一次的答案（可能是 null），调用方据此退回本地兜底。
@@ -3354,49 +3787,171 @@ function fetchSessionInfo(sessionId) {
 }
 
 /**
- * 量出进度条左右需要留多少，才能与输入框卡片左右对齐。
- * 输入框卡片是 composer 里带 `_card` 类的那层（其外层 composerStack 与我们在同一宽度），
- * hero 态与对话态的缩进不一样，所以每次实时量，而不是写死像素。
- * @param dockEl - 进度条所在容器。
- * @returns 左右内边距（px），量不到时返回 null。
+ * 上下文构成明细（v1.14.0）：宿主半去读本机 projcache，回答"这些 token 到底是谁占的"。
+ * 拿不到（宿主半没装新版 / 没这个会话的投影）就返回上一次的结果（可能是 null），调用方只做"有就显示"。
+ * @param {string} sessionId 当前会话 id（空串=让宿主半自己找）。
+ * @returns {Promise<Object|null>} { parts:[{label,tokens,share}], source, window, surfaceTokens }。
  */
-function composerInsets(dockEl) {
+function fetchContextParts(sessionId) {
+  var key = typeof sessionId === "string" ? sessionId : "";
+  var now = Date.now();
+  if (contextCache.data !== null && contextCache.key === key && now - contextCache.at < CONTEXT_TTL_MS) {
+    return Promise.resolve(contextCache.data);
+  }
+  var url = CONTEXT_API + (key.length > 0 ? "?sessionId=" + encodeURIComponent(key) : "");
+  return fetch(url, { cache: "no-store", headers: { accept: "application/json" } })
+    .then(function (response) { return response.ok ? response.json() : null; })
+    .then(function (data) {
+      if (data === null || data === undefined || data.ok !== true) return contextCache.data;
+      contextCache = { key: key, at: Date.now(), data: data };
+      return data;
+    })
+    .catch(function () { return contextCache.data; });
+}
+
+/**
+ * 花费读数（v1.14.0）：本条会话 / 今日 / 最近 N 天花了多少钱，外加最贵的几条会话。
+ * 单价由宿主半按本机台账的计价口径算（未命中 ¥1/M、缓存命中 ¥0.02/M、输出 ¥4/M）。
+ * @param {string} sessionId 当前会话 id。
+ * @param {number} days 统计最近几天（默认 7）。
+ * @returns {Promise<Object|null>} { session:{costCNY}, today:{costCNY}, week:{costCNY}, top:[…] }。
+ */
+function fetchCostInfo(sessionId, days) {
+  var key = (typeof sessionId === "string" ? sessionId : "") + "#" + String(days === undefined ? 7 : days);
+  var now = Date.now();
+  if (costCache.data !== null && costCache.key === key && now - costCache.at < COST_TTL_MS) {
+    return Promise.resolve(costCache.data);
+  }
+  var query = [];
+  if (typeof sessionId === "string" && sessionId.length > 0) query.push("sessionId=" + encodeURIComponent(sessionId));
+  query.push("days=" + String(days === undefined ? 7 : days));
+  var url = COST_API + "?" + query.join("&");
+  return fetch(url, { cache: "no-store", headers: { accept: "application/json" } })
+    .then(function (response) { return response.ok ? response.json() : null; })
+    .then(function (data) {
+      if (data === null || data === undefined || data.ok !== true) return costCache.data;
+      costCache = { key: key, at: Date.now(), data: data };
+      return data;
+    })
+    .catch(function () { return costCache.data; });
+}
+
+/**
+ * 把金额写成好看的中文写法：0.4 分钱以下给"<¥0.01"，一元以下给三位小数，其余两位。
+ * @param {number} value 金额（元）。
+ * @returns {string} 形如 "¥0.42"。
+ */
+function formatCny(value) {
+  if (typeof value !== "number" || !isFinite(value) || value <= 0) return "¥0";
+  if (value < 0.005) return "<¥0.01";
+  if (value < 1) {
+    // 一元以下给三位小数，但把没意义的尾 0 去掉（¥0.42 而不是 ¥0.420），至少留两位。
+    var text = value.toFixed(3).replace(/0+$/, "");
+    var dot = text.indexOf(".");
+    if (dot === -1) text += ".00";
+    else if (text.length - dot === 2) text += "0";
+    return "¥" + text;
+  }
+  return "¥" + value.toFixed(2);
+}
+
+/**
+ * 到线时的浏览器系统通知（v1.14.0）。
+ * 只在两个条件都满足时发：用户在设置页开了开关、浏览器已授权。
+ * 同一会话同一条线用 tag 去重，不会连发一串。
+ * @param {string} title 标题。
+ * @param {string} body 正文。
+ * @returns {boolean} 是否真的发出去了。
+ */
+function notifyOnLine(title, body) {
+  try {
+    if (typeof window === "undefined" || typeof window.Notification !== "function") return false;
+    if (window.Notification.permission !== "granted") return false;
+    var note = new window.Notification(title, { body: body, tag: "gs-budget-line" });
+    if (note !== null && note !== undefined && typeof note.close === "function") {
+      window.setTimeout(function () { try { note.close(); } catch (error) { /* 已关 */ } }, 15000);
+    }
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * 找出"与进度条同宽的那层 composer 容器"（hero 态与对话态的类名/层级都可能不一样）。
+ * 优先按类名找 composerStack；找不到、或它量出来宽度为 0（宿主插槽常是 display:contents）时，
+ * 就往上找第一个"真的有宽度"的祖先 —— 那层才是进度条真正的布局父级。
+ * @param dockEl - 进度条所在容器。
+ * @returns {Element|null} 容器元素，找不到返回 null。
+ */
+function composerArea(dockEl) {
   try {
     if (dockEl === null || typeof dockEl.getBoundingClientRect !== "function") return null;
     var stack = typeof dockEl.closest === "function" ? dockEl.closest('[class*="composerStack"]') : null;
-    if (stack === null) stack = dockEl.parentElement;
+    if (stack !== null && stack.getBoundingClientRect().width > 0) return stack;
+    var cur = dockEl.parentElement;
+    while (cur !== null) {
+      if (cur.getBoundingClientRect().width > 0) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/** 输入框本体：DSH 现在是 contenteditable 富文本，不再一定是 textarea —— 只认 textarea 会量不到。 */
+var COMPOSER_INPUT_SEL = 'textarea, [contenteditable], [role="textbox"]';
+
+/**
+ * 找出输入框卡片（带 `_card` 类的那层）—— 进度条要和它对左右边线。
+ * @param stack - composer 容器（composerArea 的结果）。
+ * @returns {Element|null} 卡片元素，找不到返回 null。
+ */
+function composerCard(stack) {
+  if (stack === null || typeof stack.querySelector !== "function") return null;
+  var input = stack.querySelector(COMPOSER_INPUT_SEL);
+  if (input !== null && typeof input.closest === "function") {
+    var hit = input.closest('[class*="_card"]');
+    if (hit !== null && typeof stack.contains === "function" && stack.contains(hit)) return hit;
+  }
+  // 退化：同容器里宽度小于容器、且内部含输入框的元素中取最宽的那个（通常就是输入框卡片）。
+  var best = 0;
+  var found = null;
+  var nodes = stack.querySelectorAll("div");
+  for (var i = 0; i < nodes.length; i += 1) {
+    var node = nodes[i];
+    var box = node.getBoundingClientRect();
+    if (box.width < 120) continue;
+    if (node.querySelector(COMPOSER_INPUT_SEL) === null) continue;
+    if (box.width > best) { best = box.width; found = node; }
+  }
+  return found;
+}
+
+/**
+ * 量出进度条左右需要留多少，才能与输入框卡片左右对齐。
+ * 输入框卡片是 composer 里带 `_card` 类的那层（其外层 composerStack 与我们在同一宽度），
+ * hero 态与对话态的缩进不一样，所以每次实时量，而不是写死像素。
+ * v1.17.1：加了"量歪了就别用"的保护（两条边加起来不该超过容器一半、卡片不该比容器宽）；
+ * 量不到就返回 null，调用方会保留上一次的值，绝不把进度条挤成一条。
+ * @param dockEl - 进度条所在容器。
+ * @returns {Object|null} {left, right} 左右内边距（px）；量不到返回 null。
+ */
+function composerInsets(dockEl) {
+  try {
+    var stack = composerArea(dockEl);
     if (stack === null) return null;
-    var card = null;
-    var input = stack.querySelector('textarea, [contenteditable="true"]');
-    if (input !== null) {
-      var cur = input;
-      while (cur !== null && cur !== stack) {
-        if (typeof cur.className === "string" && cur.className.indexOf("_card") >= 0) { card = cur; break; }
-        cur = cur.parentElement;
-      }
-    }
-    if (card === null) {
-      // 退化：同容器里宽度小于容器、且位于进度条下方的元素中取最宽的那个（通常就是输入框卡片）。
-      var dockTop = dockEl.getBoundingClientRect().top;
-      var best = 0;
-      var nodes = stack.querySelectorAll("div");
-      for (var i = 0; i < nodes.length; i += 1) {
-        var node = nodes[i];
-        var box = node.getBoundingClientRect();
-        if (box.top < dockTop) continue;
-        if (box.width < 120) continue;
-        var text = node.querySelector('textarea, [contenteditable="true"]');
-        if (text === null) continue;
-        if (box.width > best) { best = box.width; card = node; }
-      }
-    }
+    var card = composerCard(stack);
     if (card === null) return null;
     var dockRect = dockEl.getBoundingClientRect();
     var cardRect = card.getBoundingClientRect();
-    return {
-      left: Math.max(0, Math.round(cardRect.left - dockRect.left)),
-      right: Math.max(0, Math.round(dockRect.right - cardRect.right))
-    };
+    if (!(dockRect.width > 0) || !(cardRect.width > 0)) return null;
+    var left = Math.max(0, Math.round(cardRect.left - dockRect.left));
+    var right = Math.max(0, Math.round(dockRect.right - cardRect.right));
+    if (left + right > dockRect.width * 0.5) return null;
+    if (cardRect.width > dockRect.width + 2) return null;
+    return { left: left, right: right };
   } catch (error) {
     console.error("[greet-signoff] inset measure failed", error);
     return null;
@@ -3536,6 +4091,93 @@ function formatWan(value) {
   return (Math.abs(wan - Math.round(wan)) < 0.05 ? String(Math.round(wan)) : wan.toFixed(1)) + " 万";
 }
 
+/* ─── 方案 7「KPI 三格」的读数（纯函数，UI 与单测共用） ──────────────────── */
+
+/** 花费固定"财神金"、时长固定蓝：深浅两档各一个，深色下用亮一档（保证暗底上也看得清）。 */
+var KPI_GOLD = "#b8860b";
+var KPI_GOLD_DARK = "#e6b84d";
+var KPI_BLUE = "#2563eb";
+var KPI_BLUE_DARK = "#7aa2ff";
+/* v1.16.0 新增两格：预算档（紫，与"设置里的档位"同色系）、实测速率（青，避开状态色绿以免和占用混淆） */
+var KPI_VIOLET = "#7c3aed";
+var KPI_VIOLET_DARK = "#c4b5fd";
+var KPI_TEAL = "#0f766e";
+var KPI_TEAL_DARK = "#5eead4";
+/* v1.17.0 第六格：到线约还有几轮（玫红 —— 与状态色绿/黄/红、上面五格都不撞色） */
+var KPI_ROSE = "#be185d";
+var KPI_ROSE_DARK = "#f9a8d4";
+
+/**
+ * 把十六进制色变成"同色淡底"（配色 C：数字后面垫一层胶囊底）。
+ * 用 rgba 而不是固定色值，是因为占用那格的颜色可能来自用户自选的配色方案，浅/深主题都得跟着走。
+ * @param {string} color "#rrggbb" 或 "#rgb"。
+ * @param {number} alpha 透明度（浅色档 0.14 / 深色档 0.24）。
+ * @returns {string} "rgba(r,g,b,a)"。
+ */
+function tintOf(color, alpha) {
+  var rgb = hexToRgb(color);
+  var a = typeof alpha === "number" && isFinite(alpha) ? alpha : 0.14;
+  return "rgba(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + "," + a + ")";
+}
+
+/**
+ * 方案 7 的三格读数（配色 A：语义状态色；配色 C：数字胶囊底）：
+ * ① 上下文占用 —— 颜色就是状态本身（安全=绿 / 到提醒线=黄 / 到必须换线=红），不用比大小就知道"还能不能聊"；
+ * ② 本条会话花费 —— 固定财神金；③ 已聊时长 —— 固定蓝。
+ * 任何一格没数据一律写 "—"（写 0 会看起来像坏了），且不给颜色、不给底色。
+ * @param {Object} opts {hasReading, occupancyText, limitText, costText, elapsedText,
+ *   showMode, modeText, modeSuffix, showRate, rateText, showTurns, turnsText, tone, palette, dark}
+ * @returns {Array} 三个 { key, label, value, suffix, color, background, state }。
+ */
+function dockKpiCells(opts) {
+  var o = opts !== undefined && opts !== null ? opts : {};
+  var palette = Array.isArray(o.palette) && o.palette.length >= 3 ? o.palette : BAR_SCHEMES[0].colors;
+  var dark = o.dark === true;
+  var tone = o.tone === "critical" || o.tone === "warn" ? o.tone : "ok";
+  var alpha = dark ? 0.24 : 0.14;
+  var stateColor = tone === "critical" ? palette[2] : (tone === "warn" ? palette[1] : palette[0]);
+  var gold = dark ? KPI_GOLD_DARK : KPI_GOLD;
+  var blue = dark ? KPI_BLUE_DARK : KPI_BLUE;
+  var occText = typeof o.occupancyText === "string" ? o.occupancyText : "";
+  var limitText = typeof o.limitText === "string" ? o.limitText : "";
+  var costText = typeof o.costText === "string" ? o.costText : "";
+  var elapsedText = typeof o.elapsedText === "string" ? o.elapsedText : "";
+  var hasReading = o.hasReading === true;
+  // v1.16.0：第四格「预算档」与第五格「实测速率」——发哥要求把原来散在别处的这两个功能
+  // 并进这一排，样式与前三格完全一致（上面小标签 + 下面同色淡底数字胶囊）。
+  // 都是"显式要才出现"（showMode/showRate），老调用方拿到的仍然是三格，行为不变。
+  var modeText = typeof o.modeText === "string" ? o.modeText : "";
+  var modeSuffix = typeof o.modeSuffix === "string" ? o.modeSuffix : "";
+  var rateText = typeof o.rateText === "string" ? o.rateText : "";
+  // v1.17.0：第六格「到线约还有」（还剩几轮）——同样从时间行搬进来，紧跟实测速率之后。
+  var turnsText = typeof o.turnsText === "string" ? o.turnsText : "";
+  var violet = dark ? KPI_VIOLET_DARK : KPI_VIOLET;
+  var teal = dark ? KPI_TEAL_DARK : KPI_TEAL;
+  var rose = dark ? KPI_ROSE_DARK : KPI_ROSE;
+  var cell = function (key, label, text, color, suffix) {
+    var known = text !== "";
+    return {
+      key: key,
+      label: label,
+      value: known ? text : "—",
+      suffix: known && typeof suffix === "string" ? suffix : "",
+      color: known ? color : "",
+      background: known ? tintOf(color, alpha) : "",
+      state: key === "usage" ? tone : (known ? "on" : "off")
+    };
+  };
+  var cells = [
+    cell("usage", "上下文占用", hasReading ? occText : "", stateColor, limitText),
+    cell("cost", "本条会话花费", costText === "" ? "" : "≈" + costText, gold),
+    cell("time", "已聊时长", elapsedText, blue)
+  ];
+  if (o.showMode === true) cells.push(cell("mode", "预算档", modeText, violet, modeSuffix));
+  if (o.showRate === true) cells.push(cell("rate", "实测速率", rateText, teal));
+  if (o.showTurns === true) cells.push(cell("turns", "到线约还有", turnsText, rose));
+  return cells;
+}
+
+
 /**
  * 让标签页标题带上提醒前缀：不用盯着页面看，扫一眼浏览器标签就知道该换会话了。
  * 传空串表示撤掉前缀（切回安全区或组件卸载时都会摘干净）。
@@ -3634,6 +4276,15 @@ function fillComposer(text) {
  * 注意：这里是"把要求准备好"，不代替用户按回车 —— 免得误触直接把话发出去。
  */
 var SUMMARY_PROMPT = "请把本次会话整理成一份交接摘要：目标、已确认的结论、涉及的关键文件或路径、待办与注意事项。写完后我会带着它开新会话继续。";
+/**
+ * 交接包（v1.14.0）：光把摘要留在对话里没用 —— 会话一换，摘要就跟着旧上下文一起沉底。
+ * 所以这句话多要一步：**把摘要落盘成工作区根目录的 HANDOFF.md**，新会话开局能直接读它。
+ * （宿主半的提示段里同时加了一条约定：工作区有 HANDOFF.md 时，开场先读过来。）
+ */
+var HANDOFF_FILE = "HANDOFF.md";
+var HANDOFF_PROMPT = "请把本次会话整理成一份交接摘要：目标、已确认的结论、涉及的关键文件或路径、待办与注意事项。"
+  + "然后用 write 工具把它写进工作区根目录的 " + HANDOFF_FILE + "（已存在就直接覆盖），"
+  + "写好后回我一句「已写入 " + HANDOFF_FILE + "」。接着我会开新会话，带着这份文件继续。";
 
 function GreetDock(props) {
   var store = useConfig();
@@ -3664,6 +4315,34 @@ function GreetDock(props) {
   var barCriticalPercent = meterMode === "budget" ? 100 : config.criticalPercent;
   // 标签页标题提醒：扫一眼标签就知道该换会话了。
   useTitleFlag(tone === "critical" ? "🚨 " : (tone === "warn" ? "⚠️ " : ""));
+  // 深浅主题（方案 C 的判定结果，皮肤一切换这里就重渲染）：方案 7 的数字胶囊底要按主题换透明度与亮色档。
+  var dockDark = useDarkTheme();
+  // ── v1.14.0：到线时（1）按"客观计数"给一句建议（只提示，不替用户改档）；
+  //            （2）可选的浏览器系统通知（页面在后台也能收到）。
+  // 建议的判据全是已经发生过的数：超线倍数 + 当前档位。不预测、不自动切档。
+  React.useEffect(function () {
+    if (ui.autoSuggest === false || !hasReading) { setBudgetSuggest(""); return; }
+    if (budget.ratio >= 1 && modeInfo.mode !== "big" && modeInfo.mode !== "custom") {
+      setBudgetSuggest("这条会话已经超线 " + budget.ratio.toFixed(1) + " 倍，还在涨 —— 如果是个没干完的大任务，切「大任务」比反复报红有用。");
+      return;
+    }
+    if (budget.ratio > 0 && budget.ratio < 0.45 && modeInfo.mode === "big") {
+      setBudgetSuggest("这条会话离红线还远（用到 " + Math.round(budget.ratio * 100) + "%），大任务档可以先降回「日常」。");
+      return;
+    }
+    setBudgetSuggest("");
+  }, [hasReading, usedTokens, modeInfo.mode, ui.autoSuggest, budget.ratio]);
+  // 系统通知：开关打开 + 浏览器已授权才发；Notification 的 tag 让同一会话同一条线只提醒一次。
+  var notifiedRef = React.useRef("");
+  React.useEffect(function () {
+    if (ui.notifyOnLine !== true) return;
+    if (tone === "ok") { notifiedRef.current = ""; return; }
+    var key = sessionId + ":" + tone;
+    if (notifiedRef.current === key) return;
+    notifiedRef.current = key;
+    notifyOnLine(tone === "critical" ? "🚨 该开新会话了" : "⚠️ 快到提醒线了",
+      "已用 ~" + formatWan(usedTokens) + " tok（预算 " + formatWan(budget.critical) + "）· 本条会话 ≈" + (costText === "" ? "—" : costText));
+  }, [tone, sessionId, ui.notifyOnLine, usedTokens, budget.critical, costText]);
 
   var dockRef = React.useRef(null);
   var insetPair = React.useState(null);
@@ -3674,33 +4353,62 @@ function GreetDock(props) {
   var sumNotice = sumPair[0];
   var setSumNotice = sumPair[1];
 
-  // 与输入框对齐：实时量输入框卡片相对本容器的左右缩进（hero/对话态、窗口缩放都会变）。
+  // 与输入框对齐：实时量输入框卡片相对本容器的左右缩进（hero/对话态、侧栏收放、滚动条出现都会变）。
   React.useEffect(function () {
     function measure() {
       var el = dockRef.current;
       if (el === null) return;
       var next = composerInsets(el);
+      // 量不到（卡片还没挂上 / 正处在切换动画里）就保留上一次的值 —— 别把已经对齐的边线抖回去。
+      if (next === null) return;
       setInsets(function (prev) {
-        if (prev === null && next === null) return prev;
-        if (prev !== null && next !== null && prev.left === next.left && prev.right === next.right) return prev;
+        if (prev !== null && prev.left === next.left && prev.right === next.right) return prev;
         return next;
       });
     }
+    // 所有触发都合并到一帧里跑，避免"一次切换引发一串强制布局"。
+    var raf = 0;
+    function schedule() {
+      if (raf !== 0) return;
+      var rafFn = typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame
+        : function (fn) { return window.setTimeout(fn, 16); };
+      raf = rafFn(function () { raf = 0; measure(); });
+    }
     measure();
-    // 不再用 1.5s 定时轮询：那会在整个会话期间反复做强制同步布局（querySelectorAll + getBoundingClientRect）。
-    // 现在只靠 ResizeObserver（输入框卡片所在层）+ window resize，外加挂载后的两次补测覆盖 hero→对话态切换。
-    window.addEventListener("resize", measure);
-    var late = [setTimeout(measure, 300), setTimeout(measure, 1200)];
-    var observer = null;
+    // 不再用定时轮询：那会在整个会话期间反复做强制同步布局（querySelectorAll + getBoundingClientRect）。
+    // v1.17.1 修的是"有时候对齐、有时候不对齐"：
+    //   ① 原来 observe 的是 el.parentElement —— 那是宿主的插槽层（display:contents，宽高恒为 0），
+    //      ResizeObserver 永远不会回调，等于没有观察者；真会变尺寸的是 composer 容器与输入框卡片。
+    //   ② hero↔对话态切换、侧栏收放、会话加载完这些变化不一定改尺寸（只改位置），
+    //      所以除 ResizeObserver 外再挂一个 MutationObserver（子节点/类名/内联样式），任何重排都补测一次。
+    window.addEventListener("resize", schedule);
+    var late = [setTimeout(measure, 300), setTimeout(measure, 1200), setTimeout(measure, 2600)];
+    var observers = [];
     var el = dockRef.current;
-    if (el !== null && el.parentElement !== null && typeof ResizeObserver === "function") {
-      observer = new ResizeObserver(measure);
-      observer.observe(el.parentElement);
+    var stack = composerArea(el);
+    var card = composerCard(stack);
+    if (typeof ResizeObserver === "function") {
+      var ro = new ResizeObserver(schedule);
+      [stack, stack === null ? null : stack.parentElement, card, el].forEach(function (node) {
+        if (node === null || node === undefined) return;
+        try { ro.observe(node); } catch (error) { /* 观察不了就算了，还有 MutationObserver 与 resize */ }
+      });
+      observers.push(ro);
+    }
+    if (typeof MutationObserver === "function" && stack !== null) {
+      var mo = new MutationObserver(schedule);
+      try {
+        mo.observe(stack, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style"] });
+        observers.push(mo);
+      } catch (error) { /* 同上 */ }
     }
     return function () {
       for (var i = 0; i < late.length; i += 1) clearTimeout(late[i]);
-      window.removeEventListener("resize", measure);
-      if (observer !== null) observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      for (var j = 0; j < observers.length; j += 1) {
+        try { observers[j].disconnect(); } catch (error) { /* 已经断了 */ }
+      }
     };
   }, []);
 
@@ -3717,6 +4425,42 @@ function GreetDock(props) {
   var localPair = React.useState(null);
   var localStart = localPair[0];
   var setLocalStart = localPair[1];
+  // ── v1.18.0：本会话"真正聊了多久"。不再用宿主半的创建时间直接相减（那会把上次会话、
+  //    以及隔夜断档一起算进来），而是按会话 id 各自记账：每 5 秒心跳累加，断档不累加。
+  var activePair = React.useState(0);
+  var activeSessionMs = activePair[0];
+  var setActiveSessionMs = activePair[1];
+  var activeRef = React.useRef({ id: "", totalMs: 0, lastAt: 0, savedAt: 0 });
+  // ── v1.14.0：花费与"上下文被谁撑大"。两者都读本机台账/projcache，拿不到就当没有，
+  //    绝不会因为宿主半是旧版或文件缺失而把进度条本体搞坏。
+  var costPair = React.useState(null);
+  var costInfo = costPair[0];
+  var setCostInfo = costPair[1];
+  var partsPair = React.useState(null);
+  var partsInfo = partsPair[0];
+  var setPartsInfo = partsPair[1];
+  /** 到线时按"客观计数"给出的一句话建议（空串 = 不提示）。 */
+  var suggestPair = React.useState("");
+  var budgetSuggest = suggestPair[0];
+  var setBudgetSuggest = suggestPair[1];
+  React.useEffect(function () {
+    var alive = true;
+    function pull() {
+      fetchCostInfo(sessionId, 7).then(function (data) {
+        if (alive && data !== null && data !== undefined) setCostInfo(data);
+      });
+    }
+    pull();
+    var timer = window.setInterval(pull, SESSION_TTL_MS);
+    return function () { alive = false; window.clearInterval(timer); };
+  }, [sessionId, usedTokens]);
+  React.useEffect(function () {
+    var alive = true;
+    fetchContextParts(sessionId).then(function (data) {
+      if (alive && data !== null && data !== undefined) setPartsInfo(data);
+    });
+    return function () { alive = false; };
+  }, [sessionId, usedTokens]);
   React.useEffect(function () {
     var timer = window.setInterval(function () {
       // 页面在后台时不折腾：DSH 常挂着，后台每分钟重渲染没意义
@@ -3743,10 +4487,15 @@ function GreetDock(props) {
 
   // 采样"每一轮大概吃掉多少 token"：占用只在下一轮请求过后才跳一截，
   // 因此把 >200 的正向增量当作一次"又走了一轮"，取最近几次的均值来估算还能聊几轮。
-  var samplerRef = React.useRef({ last: null, jumps: [], samples: [], jumpTimes: [], lastUsedAt: 0 });
+  var samplerRef = React.useRef({ loadedId: null, state: emptySampler() });
+  // v1.18.0：账本按会话 id 从 localStorage 恢复（刷新页面不丢），会话一换就换成那条会话自己的账本。
+  if (samplerRef.current.loadedId !== sessionId) {
+    samplerRef.current.loadedId = sessionId;
+    samplerRef.current.state = readSamplerRecord(sessionId);
+  }
   React.useEffect(function () {
     if (usedTokens < 0) return;
-    var sampler = samplerRef.current;
+    var sampler = samplerRef.current.state;
     var stamp = Date.now();
     if (sampler.last === null) { sampler.last = usedTokens; sampler.lastUsedAt = stamp; return; }
     var delta = usedTokens - sampler.last;
@@ -3757,25 +4506,33 @@ function GreetDock(props) {
       if (sampler.jumpTimes.length > 12) sampler.jumpTimes.shift();
       sampler.last = usedTokens;
       sampler.lastUsedAt = stamp;
+      // 每记满一轮就落盘一次：这是"速率/还剩几轮"的核心数据，丢了就得重新等一轮。
+      writeSamplerRecord(sessionId, sampler);
     } else if (delta < -200) {
       // 压缩/清空导致占用回落：重置基线，别把负数算进每轮成本，也别让速率被这次回落带偏
       sampler.last = usedTokens;
       sampler.lastUsedAt = stamp;
       sampler.samples = [];
+      writeSamplerRecord(sessionId, sampler);
     }
-  }, [usedTokens]);
+  }, [usedTokens, sessionId]);
   // 时间轴采样：每次读数走一下或占用变了就记一个 {时刻, 占用} 点，用来算"每分钟烧多少 token"。
   React.useEffect(function () {
     if (!hasReading || usedTokens < 0) return;
-    var sampler = samplerRef.current;
+    var sampler = samplerRef.current.state;
     var tail = sampler.samples.length === 0 ? null : sampler.samples[sampler.samples.length - 1];
     if (tail !== null && tail.used === usedTokens && now - tail.t < TIME_TICK_MS) return;
     sampler.samples.push({ t: now, used: usedTokens });
     if (sampler.samples.length > SAMPLE_LIMIT) sampler.samples.shift();
     var cutoff = now - SAMPLE_WINDOW_MS;
     while (sampler.samples.length > 2 && sampler.samples[0].t < cutoff) sampler.samples.shift();
-  }, [now, usedTokens, hasReading]);
-  var jumps = samplerRef.current.jumps;
+    // 节流落盘（一分钟一次）：刷新页面后"实测速率"立刻能算，不用再等一轮。
+    if (sampler.savedAt === 0 || now - sampler.savedAt >= 60000) {
+      sampler.savedAt = now;
+      writeSamplerRecord(sessionId, sampler);
+    }
+  }, [now, usedTokens, hasReading, sessionId]);
+  var jumps = samplerRef.current.state.jumps;
   var avgPerTurn = null;
   if (jumps.length > 0) {
     var jumpSum = 0;
@@ -3813,38 +4570,66 @@ function GreetDock(props) {
     : "上下文占用未知";
 
   // ── 时间维度：把"已聊多久 / 还能聊多久"算出来并拼进提示与那一行文字 ──────────
-  var startedAt = sessionInfo !== null && sessionInfo !== undefined && typeof sessionInfo.startedAt === "number"
+  // v1.18.0 修正：宿主半给的创建时间，只有在"它答的确实是当前这条会话"时才敢用 ——
+  // 它拿不到当前会话时会退回它自己记的上一个会话，直接信它就会把上次的已聊时长顶到这次头上。
+  var serverStartedAt = sessionInfo !== null && sessionInfo !== undefined && typeof sessionInfo.startedAt === "number"
     && isFinite(sessionInfo.startedAt) && sessionInfo.startedAt > 0
-    ? sessionInfo.startedAt
-    : (typeof localStart === "number" && isFinite(localStart) && localStart > 0 ? localStart : null);
-  var startedFromServer = startedAt !== null && sessionInfo !== null && sessionInfo !== undefined
-    && typeof sessionInfo.startedAt === "number" && sessionInfo.startedAt === startedAt;
-  var elapsedMs = startedAt === null ? null : Math.max(0, now - startedAt);
-  var elapsedText = elapsedMs === null ? "" : formatDuration(elapsedMs);
-  var startClock = formatClock(startedAt === null ? 0 : startedAt);
-  // 实测消耗速率：拿最近 45 分钟的读数采样点算 token/分钟；不足 1 分钟的数据宁可不算。
-  var samples = Array.isArray(samplerRef.current.samples) ? samplerRef.current.samples : [];
-  var ratePerMinute = tokensPerMinute(samples);
-  var msPerTurn = averageTurnMs(samplerRef.current.jumpTimes);
-  var etaMs = hasReading ? remainingTimeMs(remaining, ratePerMinute, turnsLeft, msPerTurn) : null;
-  var etaText = etaMs === null ? "" : formatDuration(etaMs);
-  var etaFromRate = ratePerMinute !== null;
+    ? sessionInfo.startedAt : null;
+  var serverAnswersThisSession = serverStartedAt !== null && sessionId.length > 0
+    && typeof sessionInfo.sessionId === "string" && sessionInfo.sessionId === sessionId;
+  // 活跃时长心跳：每 5 秒走一步，断档（超过 5 分钟没动静）不计入；按会话 id 各自记账，绝不跨会话。
+  React.useEffect(function () {
+    if (sessionId.length === 0) return;
+    var rec = activeRef.current;
+    if (rec.id !== sessionId) {
+      var stored = readActiveRecord(sessionId);
+      rec.id = sessionId;
+      rec.totalMs = stored === null ? 0 : stored.totalMs;
+      rec.lastAt = stored === null ? 0 : stored.lastAt;
+      rec.savedAt = 0;
+    }
+    var next = activeElapsed({ totalMs: rec.totalMs, lastAt: rec.lastAt }, now,
+      serverAnswersThisSession ? serverStartedAt : null, null);
+    rec.totalMs = next.totalMs;
+    rec.lastAt = next.lastAt;
+    if (rec.totalMs > 0 && (rec.savedAt === 0 || now - rec.savedAt >= 30000)) {
+      writeActiveRecord(sessionId, rec.totalMs, rec.lastAt);
+      rec.savedAt = now;
+    }
+    if (next.totalMs !== activeSessionMs) setActiveSessionMs(next.totalMs);
+  }, [now, sessionId, serverAnswersThisSession, serverStartedAt]);
+  var elapsedText = sessionId.length === 0 ? "" : (activeSessionMs > 0 ? formatDuration(activeSessionMs) : "刚刚");
+  var startClock = serverAnswersThisSession ? formatClock(serverStartedAt) : "";
+  // 实测消耗速率：拿最近 45 分钟的读数采样点算 token/分钟。v1.18.0 起门槛放宽到 20 秒，
+  // 采样不够就直接用"最近两次轮次跃升"的斜率兜底 —— 聊得快的会话两轮常常不到一分钟，
+  // 以前卡 60 秒会让这一格一直显示 "—"（发哥反馈"上一轮就没显示"）。
+  var samples = Array.isArray(samplerRef.current.state.samples) ? samplerRef.current.state.samples : [];
+  var ratePerMinute = tokensPerMinute(samples, RATE_MIN_SPAN_MS);
+  var rateFromTurnJumps = false;
+  if (ratePerMinute === null) {
+    ratePerMinute = rateFromJumps(samplerRef.current.state.jumpTimes, samplerRef.current.state.jumps);
+    rateFromTurnJumps = ratePerMinute !== null;
+  }
   // 读数新鲜度：token 读数只在上一次请求结束后才更新，说清楚"这是几分钟前的读数"，
   // 免得看着时间在走、百分比不动就以为进度条坏了。
-  var readingAgeMs = samplerRef.current.lastUsedAt > 0 ? Math.max(0, now - samplerRef.current.lastUsedAt) : null;
+  var lastUsedAtValue = samplerRef.current.state.lastUsedAt;
+  var readingAgeMs = lastUsedAtValue > 0 ? Math.max(0, now - lastUsedAtValue) : null;
   var staleText = readingAgeMs !== null && readingAgeMs >= 120000 ? "上次读数 " + formatDuration(readingAgeMs) + "前" : "";
   if (elapsedText !== "") {
-    detail += " · 已聊 " + elapsedText + (startClock === "" ? "" : "（本会话开始于 " + startClock + (startedFromServer ? "" : "，本地估算") + "）");
+    detail += " · 已聊 " + elapsedText + (startClock === "" ? "" : "（本会话开始于 " + startClock + "）")
+      + "（只算这个会话在聊的时间，断开的不算）";
   }
-  if (etaText !== "") {
-    if (etaFromRate) {
-      detail += " · 实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分 → 预计还能聊 ~" + etaText;
-    } else {
-      detail += " · 预计还能聊 ~" + etaText
-        + "（按同一节奏估：约 " + formatDuration(msPerTurn) + "/轮）";
-    }
+  if (ratePerMinute !== null) {
+    detail += " · 实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分"
+      + (turnsLeft === null ? "" : "（照这个速度，到线大约还有 " + turnsLeft + " 轮）");
   }
   if (staleText !== "") detail += " · " + staleText;
+  // 本条会话花了多少钱（v1.14.0）：token 是抽象单位，钱才有体感；也顺手印证"输出比缓存读贵 200 倍"。
+  var sessionCost = costInfo !== null && costInfo !== undefined && costInfo.session !== null && costInfo.session !== undefined
+    && typeof costInfo.session.costCNY === "number" && isFinite(costInfo.session.costCNY)
+    ? costInfo.session.costCNY : null;
+  var costText = sessionCost === null ? "" : formatCny(sessionCost);
+  if (costText !== "") detail += " · 本条会话 ≈" + costText;
   tip = detail;
   var shortParts = [hasReading
     ? (meterMode === "budget"
@@ -3852,7 +4637,8 @@ function GreetDock(props) {
         : percent + "% · 剩余 ~" + formatTokens(remaining))
     : "上下文占用未知"];
   if (elapsedText !== "") shortParts.push("已聊 " + elapsedText);
-  if (etaText !== "") shortParts.push("到线还能聊 ~" + etaText);
+  if (costText !== "" && ui.showCost !== false) shortParts.push("≈" + costText);
+  if (ratePerMinute !== null) shortParts.push("实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分");
   else if (turnsLeft !== null && meterMode !== "window") shortParts.push("约还能聊 " + turnsLeft + " 轮");
   if (hasReading && meterMode === "window") shortParts.push("剩余 ~" + formatTokens(remaining));
   shortText = shortParts.join(" · ");
@@ -3884,18 +4670,18 @@ function GreetDock(props) {
    * 全程不自动发送 —— 免得误触把话发出去。
    */
   function askSummary() {
-    if (fillComposer(SUMMARY_PROMPT)) {
-      setSumNotice("已把「总结要点」写进输入框：按回车发给它，等它答完再点「开新会话」");
+    if (fillComposer(HANDOFF_PROMPT)) {
+      setSumNotice("已把「总结要点」写进输入框：按回车发给它 —— 它会顺手把摘要落盘成 " + HANDOFF_FILE + "，新会话开局能直接读到。");
       return;
     }
     var done = function (ok) {
       setSumNotice(ok
-        ? "已把这句总结要求复制到剪贴板：粘到输入框发给我就行 → " + SUMMARY_PROMPT
-        : "输入框写不进去（编辑器受控），请手动把这句话发给我：" + SUMMARY_PROMPT);
+        ? "已把交接要求复制到剪贴板：粘到输入框发给我就行（会要求它写进 " + HANDOFF_FILE + "）"
+        : "输入框写不进去（编辑器受控），请手动把这句话发给我：" + HANDOFF_PROMPT);
     };
     try {
       if (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === "function") {
-        navigator.clipboard.writeText(SUMMARY_PROMPT).then(function () { done(true); }, function () { done(false); });
+        navigator.clipboard.writeText(HANDOFF_PROMPT).then(function () { done(true); }, function () { done(false); });
         return;
       }
     } catch (error) { /* 落到直接显示 */ }
@@ -3947,27 +4733,57 @@ function GreetDock(props) {
     ? ui.imageFlipped === true
     : (facingRight && MARKER_FLIP[marker] === 1);
   var critical = tone === "critical";
+  // 方案 7 的"贯通线"用当前状态色实色（配色 A：进度条颜色跟占用一致）：
+  // 走到哪里就是哪一档的颜色 —— 安全绿 / 提醒黄 / 必须换红；未走到的部分仍留淡色色带（--gs-scale-faint）。
+  var stateColor = critical ? palette[2] : (tone === "warn" ? palette[1] : palette[0]);
   var clampLeft = "clamp(" + Math.round(barHeight + 10) + "px, " + barPercent + "%, calc(100% - " + Math.round(barHeight + 10) + "px))";
   var markerNode = markerImage !== ""
     ? React.createElement("img", { className: "gs-marker-img", src: markerImage, alt: "" })
     : React.createElement("span", { className: "gs-marker-emoji" }, marker);
 
-  // 预算模式小胶囊（三个入口里的主入口）：不用进设置页，进度条下面点一下就切档。
+  // 预算档入口（v1.14.0 改成"点开选"）：以前点一下是四档轮转 —— 轮到了哪一档、当前算会话档还是
+  // 默认档，全得靠猜。现在点开就是一个列表：四档各自的线都写着，当前档高亮，并注明它从哪来。
   var modeLabel = budgetModeLabel(modeInfo.mode);
   var modeScopeText = modeInfo.scope === "session" ? "本会话临时档（不影响默认）" : "跟随默认档";
-  var modePill = React.createElement("div", { className: "gs-dock-mode" },
-    React.createElement("button", {
-      type: "button",
-      className: "gs-mode-pill" + (modeInfo.scope === "session" ? " gs-mode-pill-on" : ""),
-      title: "当前预算档「" + modeLabel + "」：" + formatWan(budget.warn) + " 提醒 / " + formatWan(budget.critical)
-        + " 必须换 · " + modeScopeText + " · " + budgetModeHint(modeInfo.mode)
-        + " · 点一下切下一档（" + BUDGET_MODE_CYCLE.slice(0, 3).map(budgetModeLabel).join(" → ") + " → 跟随默认）",
-      onClick: function () { applyBudgetMode(nextBudgetMode(modeInfo.mode)); }
-    }, "🎯 " + modeLabel + (modeInfo.scope === "session" ? "（本会话）" : "")),
-    tone !== "ok" && modeInfo.mode !== "big"
-      ? React.createElement("span", { className: "gs-mode-hint" }, "任务大？点胶囊抬线，别急着开新会话")
-      : null
-  );
+  // v1.18.0（发哥提问"日常跟跟随默认档是不是重复了"）：确实重复了 —— 那时"当前档那一行"和
+  // 菜单最后一行"跟随默认档"都在说同一件事。现在的规则：当前生效档只在**它自己那一行**标
+  // "✓ 来源 · 当前"；「跟随默认档」只在本会话设了临时档时才作为**还原操作**出现。
+  var modeSourceText = modeInfo.scope === "session" ? "本会话临时档"
+    : (modeInfo.scope === "global" ? "来自默认档" : "内置默认");
+  var menuPair = React.useState(false);
+  var modeMenuOpen = menuPair[0];
+  var setModeMenuOpen = menuPair[1];
+  // v1.16.0：胶囊本体不再单独成行 —— 「预算档」成了 KPI 那一排的第四格（样式与占用/花费/时长
+  // 完全一致），点那格弹出下面这张菜单；菜单挂在格子里向上弹（原来 fixed 不带坐标，滚动后会漂）。
+  var modeMenuNode = modeMenuOpen === true
+      ? React.createElement("div", { className: "gs-mode-menu" },
+          BUDGET_MODES.map(function (item) {
+            var active = item.id === modeInfo.mode;
+            return React.createElement("button", {
+              key: "pick-" + item.id, type: "button",
+              className: active ? "gs-mode-item gs-mode-item-on" : "gs-mode-item",
+              title: item.hint,
+              onClick: function () { setModeMenuOpen(false); applyBudgetMode(item.id); }
+            },
+              React.createElement("b", null, item.label),
+              React.createElement("span", null, item.warn === null
+                ? "用手填的黄线 / 红线"
+                : formatWan(item.warn) + " 提醒 / " + formatWan(item.critical) + " 换"),
+              active ? React.createElement("i", null, "✓ " + modeSourceText + " · 当前") : null
+            );
+          }).concat(modeInfo.scope === "session" ? [
+            React.createElement("button", {
+              key: "pick-default", type: "button",
+              className: "gs-mode-item",
+              title: "清掉本会话的临时档，回到设置页里选的默认档",
+              onClick: function () { setModeMenuOpen(false); applyBudgetMode(""); }
+            },
+              React.createElement("b", null, "跟随默认档"),
+              React.createElement("span", null, "清掉本会话的临时档，回到默认档")
+            )
+          ] : [])
+        )
+      : null;
 
   // 外层 .gs-dock 不带背景、不留横向内边距：
   // 宿主主题会给输入区附属卡片（[data-slot="conversation.input.dock"] > *）强制上白底/圆角/阴影，
@@ -3991,7 +4807,7 @@ function GreetDock(props) {
   },
     React.createElement("div", {
       className: "gs-dock-fill",
-      style: critical ? { width: barPercent + "%", background: dangerColor } : { width: barPercent + "%" }
+      style: { width: barPercent + "%", background: stateColor }
     }),
     (marker === "" && markerImage === "")
       ? null
@@ -4013,28 +4829,139 @@ function GreetDock(props) {
       ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
       : null
   );
-  // 进度条下的时间行（"完整"形态才有；紧凑/纯文字形态把时间并进那一行文字里）。
-  // 两个数字都来自真实数据：会话创建时间 + 实测 token/分钟，并且每 5 秒跟着走。
+  // 进度条下的信息行（"完整"形态才有；紧凑/纯文字形态把读数并进那一行文字里）。
+  // v1.15.0：花费与"已聊多久"搬进了方案 7 的三格读数（左中右三格），这里不再重复渲染，
+  // 只留两个三格里没有的数：实测速率与读数新鲜度。
   var showTime = ui.showTime !== false;
-  var timeNode = !showTime || (elapsedText === "" && etaText === "" && turnsLeft === null) ? null
-    : React.createElement("div", { className: "gs-dock-time", title: detail },
-      React.createElement("span", null, "⏱ 已聊 ",
-        React.createElement("b", null, elapsedText === "" ? "—" : elapsedText)),
-      etaText !== ""
-        ? React.createElement("span", null, "预计还能聊 ", React.createElement("b", null, "~" + etaText))
-        : (turnsLeft !== null
-            ? React.createElement("span", null, "预计还能聊 ", React.createElement("b", null, "~" + turnsLeft + " 轮"))
-            : null),
-      etaText !== "" && etaFromRate
-        ? React.createElement("span", null, "实测 ~" + formatTokens(Math.round(ratePerMinute)) + "/分")
-        : null,
-      staleText === "" ? null : React.createElement("span", null, "· " + staleText)
-    );
+  // v1.16.0：「实测速率」从这一行小字升成 KPI 那一排的第五格（样式与占用/花费/时长一致）；
+  // v1.17.0（发哥要求）："到线约还有几轮"也从这一行搬进那一排，紧跟实测速率之后，样式一致 ——
+  // 这一行只剩"读数新鲜度"，没内容就整行不渲染。
+  var rateKpiText = ratePerMinute === null ? "" : "~" + formatTokens(Math.round(ratePerMinute)) + "/分";
+  var turnsKpiText = turnsLeft === null ? "" : turnsLeft + " 轮";
+  var staleSpan = staleText === "" ? null : React.createElement("span", null, "· " + staleText);
+  // ── 方案 7（v1.15.0）：上面三格读数（占用 / 花费 / 时长），下面一条贯通进度线 ──────────
+  // 三格已经承担了"读数"职责，所以"完整"形态下时间行只留两个不重复的信息：
+  // 实测速率（token/分，确实发生过的数）与读数新鲜度；两个都没有就整行不渲染，不留空行。
+  // v1.16.0（发哥要求）：这一排除了占用 / 花费 / 时长三格，再加「预算档」与「实测速率」两格 ——
+  // 同样的"上面小标签 + 下面同色数字胶囊"样式。预算档那格是可点的（弹出换档菜单），
+  // 所以它渲染成 <button>；格数决定列数（4 / 5 / 6），窄窗口由 CSS media query 退回 3 / 2 列。
+  // v1.17.0（发哥要求）：再加第六格「到线约还有 N 轮」，位置就在「实测速率」右边。
+  var kpiCells = display === "full"
+    ? dockKpiCells({
+        hasReading: hasReading,
+        occupancyText: meterMode === "budget" ? formatWan(usedTokens) : percent + "%",
+        limitText: "/ " + (meterMode === "budget" ? formatWan(budget.critical) : formatWan(occupancy.capacity)),
+        costText: ui.showCost === false ? "" : costText,
+        elapsedText: elapsedText,
+        showMode: true,
+        modeText: modeLabel,
+        modeSuffix: modeInfo.scope === "session" ? "本会话" : "",
+        showRate: showTime,
+        rateText: rateKpiText,
+        showTurns: showTime,
+        turnsText: turnsKpiText,
+        tone: tone,
+        palette: palette,
+        dark: dockDark
+      })
+    : [];
+  var kpiValInner = function (cell) {
+    return cell.suffix === ""
+      ? cell.value
+      : [cell.value, React.createElement("i", { key: "sfx" }, " " + cell.suffix)];
+  };
+  var kpiNode = display === "full"
+    ? React.createElement("div", { className: "gs-dock-kpis gs-dock-kpis-" + kpiCells.length, title: detail },
+        kpiCells.map(function (cell) {
+          var cellStyle = {};
+          if (cell.color !== "") cellStyle.color = cell.color;
+          if (cell.background !== "") cellStyle.background = cell.background;
+          if (cell.key === "mode") {
+            return React.createElement("div", { className: "gs-dock-kpi gs-dock-kpi-mode", key: "kpi-" + cell.key },
+              React.createElement("span", { className: "gs-dock-kpi-lab" }, cell.label),
+              React.createElement("button", {
+                type: "button",
+                className: "gs-dock-kpi-val gs-kpi-btn",
+                style: cellStyle,
+                "aria-expanded": modeMenuOpen === true,
+                title: "当前预算档「" + modeLabel + "」：" + formatWan(budget.warn) + " 提醒 / " + formatWan(budget.critical)
+                  + " 必须换 · " + modeScopeText + " · " + budgetModeHint(modeInfo.mode) + " · 点开可以换档",
+                onClick: function () { setModeMenuOpen(modeMenuOpen !== true); }
+              }, kpiValInner(cell)),
+              modeMenuNode
+            );
+          }
+          return React.createElement("div", { className: "gs-dock-kpi", key: "kpi-" + cell.key },
+            React.createElement("span", { className: "gs-dock-kpi-lab" }, cell.label),
+            React.createElement("span", { className: "gs-dock-kpi-val", style: cellStyle }, kpiValInner(cell))
+          );
+        })
+      )
+    : null;
+  var metaNode = display === "full" && showTime && staleSpan !== null
+    ? React.createElement("div", { className: "gs-dock-time", title: detail }, staleSpan)
+    : null;
+  // 上下文构成明细（v1.14.0）：只告诉"用了多少"没用，得说清"是谁占的"才谈得上砍。
+  // 数据由宿主半读本机上下文投影（contextTimeline），这里纯展示；默认收起，点标题才展开。
+  var parts = partsInfo !== null && partsInfo !== undefined && Array.isArray(partsInfo.parts) ? partsInfo.parts : [];
+  var partsOpen = ui.showParts === true;
+  // v1.15.3：标题不再带「（这些 token 是谁占的）」这截解释 —— 展开后哪一行是谁占的一目了然，
+  // 解释留在 title 提示里，标题本身短一点（红卡里那行是加粗白字，太长反而不像标题）。
+  var partsNode = parts.length === 0 ? null
+    : React.createElement("div", { className: "gs-dock-parts" },
+        React.createElement("button", {
+          type: "button", className: "gs-dock-parts-toggle",
+          title: "展开看这些 token 是谁占的（按占比排序，前几名就是能砍的地方）",
+          onClick: function () { setUiPrefs({ showParts: partsOpen !== true }); }
+        }, (partsOpen ? "▾ " : "▸ ") + "上下文构成"),
+        partsOpen
+          ? React.createElement("div", { className: "gs-parts-list" },
+              parts.map(function (item, index) {
+                var share = typeof item.share === "number" && isFinite(item.share) ? item.share : 0;
+                // 每行一个自己的颜色（红底白条看不清谁是谁，见 PART_COLORS 注释）
+                var partColor = PART_COLORS[index % PART_COLORS.length];
+                return React.createElement("div", { className: "gs-parts-row", key: "part-" + index },
+                  React.createElement("span", { className: "gs-parts-label", title: String(item.key === undefined ? "" : item.key) }, String(item.label === undefined ? item.key : item.label)),
+                  React.createElement("span", { className: "gs-parts-track" },
+                    React.createElement("span", { className: "gs-parts-fill", style: { width: Math.max(2, Math.round(share * 100)) + "%", "--gs-part-color": partColor } })),
+                  React.createElement("span", { className: "gs-parts-num" }, formatWan(item.tokens) + " · " + Math.round(share * 100) + "%")
+                );
+              }),
+              React.createElement("div", { className: "gs-hint" },
+                partsInfo !== null && partsInfo !== undefined
+                  && (typeof partsInfo.partsTokens === "number" || typeof partsInfo.surfaceTokens === "number")
+                  ? "合计 ~" + formatWan(typeof partsInfo.partsTokens === "number" ? partsInfo.partsTokens : partsInfo.surfaceTokens)
+                    + " tok，按占比排序（前几名就是能砍的地方）"
+                  : "按占比排序")
+            )
+          : null
+      );
+  // 到线建议（v1.14.0）：只说一句"按数字看该抬线/该降档"，按钮就在旁边，但不自动改档 ——
+  // 换档是用户的决定，插件只负责把"现在这个档合不合适"讲清楚。
+  var suggestNode = budgetSuggest === "" ? null
+    : React.createElement("div", { className: "gs-dock-suggest" },
+        React.createElement("span", { className: "gs-dock-suggest-text" }, "💡 " + budgetSuggest),
+        modeInfo.mode === "big"
+          ? React.createElement("button", {
+              type: "button", className: "gs-dock-new",
+              onClick: function () { applyBudgetMode("daily"); }
+            }, "降回日常")
+          : React.createElement("button", {
+              type: "button", className: "gs-dock-new",
+              onClick: function () { applyBudgetMode("big"); }
+            }, "切大任务")
+      );
   // 到线/超线的**大横幅**：不用去读百分比，一眼就知道该开新会话了。
   // 红线是红底白字 + 呼吸；黄线是淡黄底。文字给"已用多少 / 预算多少 / 超了几倍"。
-  var bannerNode = tone === "ok" ? null : React.createElement("div", {
-    className: "gs-dock-banner " + (critical ? "gs-dock-banner-critical" : "gs-dock-banner-warn")
-  },
+  // v1.15.1：横幅不再单飞 —— 「上下文构成」与「档位建议」并进同一张卡（卡内细线分隔），
+  // 三块信息共用同一个边框与底色；卡内展开明细时停掉呼吸闪动（一闪一闪没法逐行读数）。
+  var buildBanner = function (withExtras) {
+    if (tone === "ok") return null;
+    return React.createElement("div", {
+      className: "gs-dock-banner " + (critical ? "gs-dock-banner-critical" : "gs-dock-banner-warn")
+        + (withExtras === true && partsOpen === true ? " gs-dock-banner-open" : "")
+    },
+    React.createElement("div", { className: "gs-dock-banner-top" },
     React.createElement("span", { className: "gs-dock-banner-main" },
       React.createElement("span", { className: "gs-dock-banner-title" }, alertLine),
       React.createElement("span", { className: "gs-dock-banner-sub" }, alertSub)
@@ -4053,7 +4980,15 @@ function GreetDock(props) {
         ? React.createElement("button", { type: "button", className: "gs-dock-new", onClick: openNewSession }, "开新会话")
         : null
     )
-  );
+    ),
+    // 卡内下半张：上下文构成（可展开）+ 档位建议，各带一条细分隔线
+    withExtras === true ? partsNode : null,
+    withExtras === true ? suggestNode : null
+    );
+  };
+  // 完整形态用带附加信息的卡；纯文字形态塞在行内，只保留标题行（不然一行塞不下）
+  var bannerNode = buildBanner(true);
+  var bannerNodeInline = buildBanner(false);
   return React.createElement("div", {
     className: dockClass,
     ref: dockRef,
@@ -4068,15 +5003,40 @@ function GreetDock(props) {
   },
     React.createElement("div", { className: "gs-tip" }, tip),
     React.createElement("div", { className: "gs-dock-row", style: rowStyle },
-      display === "text" ? textNode : barNode,
-      display === "full" ? timeNode : null,
-      // 预算模式小胶囊：任何形态都留着（"大任务模式"的随手开关）
-      modePill,
-      // 纯文字形态没有进度条和横幅的位置，所以把横幅也塞进行内（保持"一眼就知道"）
-      display === "text" ? bannerNode : null
-    ),
-    display === "text" ? null : bannerNode,
-    sumNotice === "" ? null : React.createElement("div", { className: "gs-dock-note" }, sumNotice)
+      // v1.15.2：所有零件装进**同一个**胶囊容器（.gs-dock-stack）——
+      // 三格读数 / 进度条 / 时间行 / 预算胶囊 / 到线横幅 / 上下文构成 / 档位建议 / 提示，
+      // 共用一条边框、一个底色、一条左右边界；不再各起一方（既难看又多占纵向空间）。
+      // 缩进仍只来自 .gs-dock-row 的 insets，所以内层白底不会撑出"多余白框"。
+      React.createElement("div", { className: "gs-dock-stack", "data-gs-stack": "1" },
+        // 方案 7：三格读数在最上（与输入框同宽同左右边界，缩进来自 .gs-dock-row 的 insets）
+        kpiNode,
+        display === "text" ? textNode : barNode,
+        display === "full" ? metaNode : null,
+        // 预算模式（v1.16.0）：完整形态下它是 KPI 那一排的第四格（见 kpiNode）；
+        // 紧凑 / 纯文字形态没有那一排，就退回原来的小胶囊，保证任何形态都够得着换档。
+        display === "full"
+          ? null
+          : React.createElement("div", { className: "gs-dock-mode" },
+              React.createElement("button", {
+                type: "button",
+                className: "gs-mode-pill" + (modeInfo.scope === "session" ? " gs-mode-pill-on" : ""),
+                "aria-expanded": modeMenuOpen === true,
+                title: "当前预算档「" + modeLabel + "」：" + formatWan(budget.warn) + " 提醒 / " + formatWan(budget.critical)
+                  + " 必须换 · " + modeScopeText + " · " + budgetModeHint(modeInfo.mode) + " · 点开可以换档",
+                onClick: function () { setModeMenuOpen(modeMenuOpen !== true); }
+              }, "🎯 " + modeLabel + (modeInfo.scope === "session" ? "（本会话）" : "")),
+              modeMenuNode
+            ),
+        // 纯文字形态没有进度条和横幅的位置，所以把横幅也塞进行内（保持"一眼就知道"）
+        display === "text" ? bannerNodeInline : null,
+        display === "text" ? null : bannerNode,
+        // 上下文构成明细 / 档位建议：到线时已经并进上面那张横幅卡里（一个边框一块信息），
+        // 只有"没到线"时才各自独立成行 —— 没有卡可依附，就还是原来的轻量小字。
+        display === "text" || tone !== "ok" ? null : partsNode,
+        display === "text" || tone !== "ok" ? null : suggestNode,
+        sumNotice === "" ? null : React.createElement("div", { className: "gs-dock-note" }, sumNotice)
+      )
+    )
   );
 }
 
@@ -5168,6 +6128,13 @@ module.exports = {
     nextBudgetMode: nextBudgetMode,
     budgetModes: BUDGET_MODES,
     budgetModeCycle: BUDGET_MODE_CYCLE,
+    // v1.14.0：长尾选项裁剪 + 金额写法（设置页精简 / 花费显示都靠这两个纯函数）
+    pickOptions: pickOptions,
+    formatCny: formatCny,
+    primeAnimations: PRIME_ANIMATIONS,
+    primeSchemes: PRIME_SCHEMES,
+    primeMarkers: PRIME_MARKERS,
+    legacyLinesMax: LEGACY_LINES_MAX,
     // 深浅判定（方案 C）与进度条时间维度
     parseCssRgb: parseCssRgb,
     colorLuminance: colorLuminance,
@@ -5177,10 +6144,20 @@ module.exports = {
     formatDuration: formatDuration,
     formatClock: formatClock,
     tokensPerMinute: tokensPerMinute,
+    rateFromJumps: rateFromJumps,
+    rateMinSpanMs: RATE_MIN_SPAN_MS,
+    // v1.18.0：活跃时长记账 + 采样账本（按会话 id 分开存，刷新/切会话都不串）
+    activeElapsed: activeElapsed,
+    emptySampler: emptySampler,
+    activeIdleMaxMs: ACTIVE_IDLE_MAX_MS,
+    activeFreshMaxMs: ACTIVE_FRESH_MAX_MS,
     remainingTimeMs: remainingTimeMs,
     averageTurnMs: averageTurnMs,
     hexToRgb: hexToRgb,
     mixRgb: mixRgb,
+    // v1.15.0：方案 7「KPI 三格」的读数与数字胶囊底（配色 A 语义色 + C 胶囊底）
+    dockKpiCells: dockKpiCells,
+    tintOf: tintOf,
     rampColor: rampColor,
     barScale: barScale,
     lineCssDecls: lineCssDecls,

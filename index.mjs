@@ -23,7 +23,7 @@ import {
   copyFileSync, renameSync, statSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, isAbsolute, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-greet-signoff'
@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.12.0'
+const HOST_VERSION = '1.18.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -90,6 +90,49 @@ const ASSET_DIR = join(DSH_HOME, 'greet-signoff-assets')
 const CLIENT_PATH = fileURLToPath(new URL('./client.js', import.meta.url))
 /** 表情中文名/关键词索引（1.2.0 起从 client.js 里搬出来，首次打开表情框才加载）。 */
 const EMOJI_INDEX_PATH = fileURLToPath(new URL('./emoji-zh.json', import.meta.url))
+
+/* ─── 诊断类接口（上下文占用 / 花费 / 交接落盘）的常量 ───────────────────── */
+/** 会话投影缓存：`<DSH_HOME>/storages/session_projcache/sessions/{,session-}<sessionId>.json`。 */
+const PROJCACHE_DIR = join(DSH_HOME, 'storages', 'session_projcache', 'sessions')
+/** 用量台账：按「日期 → provider → model」累计（**没有**会话维度）。 */
+const USAGE_LEDGER_PATH = join(DSH_HOME, 'dsh-usage', 'usage-ledger.json')
+/**
+ * deepseek-flash 单价（元/百万 token），写死为常量并随接口返回，
+ * 方便页面直接展示"这一条是按什么价算的"。
+ * 实测与台账自带的 cost 字段一致（2026-09-15/17/19/20 四天误差 < 1e-5 元）。
+ */
+const COST_UNIT = { uncachedPerM: 1, cacheReadPerM: 0.02, outputPerM: 4 }
+/** 上下文明细里每个片段分类的中文可读名；未知分类直接用原始 key 当标签。 */
+const PART_LABELS = {
+  system: '系统提示词',
+  tools: '工具定义',
+  inject: '记忆与注入',
+  assistant: '助手历史',
+  tool: '工具结果',
+  user: '用户历史',
+  other: '其它',
+}
+/** parts 最多几条，其余合并成 key=other 的一条。 */
+const PART_MAX = 12
+/** hot（最占地方的单个片段）最多几条。 */
+const HOT_MAX = 6
+/** hot 里附带的原文预览长度（字符）。 */
+const HOT_TEXT_MAX = 60
+/** 最贵会话 top 几条。 */
+const TOP_MAX = 5
+/** 扫描全部会话投影算 top 的缓存时长（毫秒）——避免每次请求都把 50 个文件读一遍。 */
+const TOP_CACHE_MS = 60000
+/** 会话 id 允许的形状（同时也是路径穿越防线：只允许字母数字与 . _ -）。 */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+/** 交接摘要正文的字节上限。 */
+const HANDOFF_TEXT_LIMIT = 200000
+/** 交接文件名缺省值。 */
+const HANDOFF_DEFAULT_NAME = 'HANDOFF.md'
+/** 交接请求体上限（正文 200000 字节 + JSON 转义余量）。 */
+const HANDOFF_BODY_LIMIT = 260 * 1024
+/** 文件名长度上限与非法字符（与 Windows 保留字符一起挡掉）。 */
+const HANDOFF_NAME_MAX = 128
+const HANDOFF_BAD_CHARS = /[\\/:*?"<>|\u0000-\u001f]/
 
 const DEFAULT_LINE = {
   text: '',
@@ -792,6 +835,683 @@ function ruleText() {
   return ruleTextWith(config, stats, info.cwd)
 }
 
+/* ─── 诊断类接口的纯逻辑（不碰磁盘，全部可单测） ─────────────────────────
+ *
+ * 三块：
+ *  ① 上下文占用：把会话投影文件里的 `contextPressure` / `contextTimeline` 解析成
+ *     「谁把上下文撑大了」的分类明细（parseContextTimeline）；
+ *  ② 花费：台账按天聚合 + 会话投影算单会话成本（aggregateLedger / parseSessionCost /
+ *     rankSessionCosts / costCNYOf）；
+ *  ③ 交接落盘：文件名与最终路径的校验（parseHandoffFilename / resolveHandoffPath /
+ *     validateHandoffText）。
+ * 全部 fail-safe：任何字段对不上都回落到"空数据 + note"，绝不抛异常。
+ */
+
+/** 数字兜底：不是有限数字就按 0 算（投影文件里字段可能缺失或为 null）。 */
+function numOr0(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/** 保留 4 位小数（金额展示用）。 */
+function round4(value) {
+  const num = typeof value === 'number' && Number.isFinite(value) ? value : 0
+  return Math.round(num * 10000) / 10000
+}
+
+/**
+ * 投影文件的行表：`{version, record:{rows:{<key>:{ver,seq,val}}}}`。
+ * @param {unknown} doc 解析后的投影 JSON。
+ * @returns {object} 行表；结构不认识时给空对象。
+ */
+function projcacheRows(doc) {
+  if (doc === null || typeof doc !== 'object') return {}
+  const record = doc.record
+  if (record === null || typeof record !== 'object') return {}
+  const rows = record.rows
+  return rows !== null && typeof rows === 'object' ? rows : {}
+}
+
+/**
+ * 取某一行的 val（`{ver, seq, val}` 里的 val）；缺失或不是对象时给空对象。
+ * @param {unknown} row 行对象。
+ * @returns {object} 该行的值。
+ */
+function rowVal(row) {
+  if (row === null || typeof row !== 'object') return {}
+  const value = row.val
+  return value !== null && typeof value === 'object' ? value : {}
+}
+
+/** 组合分类：key 相同就累加 token（system/tools 的标量与其同名分类会合并）。 */
+function bumpPart(buckets, key, tokens) {
+  const amount = numOr0(tokens)
+  if (amount <= 0) return
+  const name = typeof key === 'string' && key.length > 0 ? key : 'other'
+  const current = buckets.get(name) ?? { key: name, label: PART_LABELS[name] ?? name, tokens: 0 }
+  current.tokens += amount
+  buckets.set(name, current)
+}
+
+/** 按 tokens 降序（同额按 key 升序，保证结果稳定可测）。 */
+function byTokensDesc(a, b) {
+  if (b.tokens !== a.tokens) return b.tokens - a.tokens
+  return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0)
+}
+
+/**
+ * 解析会话投影里的上下文占用明细。
+ *
+ * 真实结构（2026-09-20 实查，50 个投影文件统计过）：
+ *  - `record.rows.contextPressure.val` = {surfaceTokens, contextWindow, pressureTokens, sampledSurfaceTokens}
+ *  - `record.rows.contextTimeline.val`  = {surface[], sums{}, systemTokens, toolsTokens, requests[],
+ *                                          model, provider, lastModel, contextWindow, cost{}, timing{}, …}
+ *  - `surface[]` 每项 = {seq, time, tokens, cat, text?, form?, calls?, tool?, imgs?, err?}，
+ *    **cat 实测只有 user / inject / assistant / tool 四种**（没有 system / memory / tools 分类，
+ *    系统提示词与工具定义是 contextTimeline 上的两个标量 systemTokens / toolsTokens）。
+ *
+ * @param {unknown} doc 解析后的投影 JSON（读不到时传 null）。
+ * @param {string|undefined} sessionId 会话 id。
+ * @param {string} [reason] 取不到数据时的原因，写进 note。
+ * @returns {object} 响应体（不含 ok）。
+ */
+function parseContextTimeline(doc, sessionId, reason) {
+  const id = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null
+  const empty = {
+    sessionId: id,
+    source: 'none',
+    window: 0,
+    surfaceTokens: 0,
+    partsTokens: 0,
+    pressureTokens: 0,
+    sampledSurfaceTokens: 0,
+    projectedTokens: 0,
+    parts: [],
+    hot: [],
+    model: '',
+    provider: '',
+    requestCount: 0,
+    lastRequestTotal: 0,
+    note: typeof reason === 'string' && reason.length > 0 ? reason : '拿不到该会话的上下文明细',
+  }
+  if (doc === null || doc === undefined || typeof doc !== 'object') return empty
+
+  const rows = projcacheRows(doc)
+  const timeline = rowVal(rows.contextTimeline)
+  const pressure = rowVal(rows.contextPressure)
+  const surface = Array.isArray(timeline.surface) ? timeline.surface : []
+
+  const buckets = new Map()
+  bumpPart(buckets, 'system', timeline.systemTokens)
+  bumpPart(buckets, 'tools', timeline.toolsTokens)
+  for (const item of surface) {
+    if (item === null || typeof item !== 'object') continue
+    const cat = typeof item.cat === 'string' && item.cat.length > 0 ? item.cat : 'other'
+    bumpPart(buckets, cat, item.tokens)
+  }
+  if (buckets.size === 0) {
+    return Object.assign({}, empty, { note: '投影文件里没有上下文明细（会话可能刚建立，或这一版 DSH 改了结构）' })
+  }
+
+  const sorted = [...buckets.values()].sort(byTokensDesc)
+  let head = sorted
+  if (sorted.length > PART_MAX) {
+    // 先只留 PART_MAX − 1 条，剩下的全并进 other，合并后总条数正好是 PART_MAX。
+    head = sorted.slice(0, PART_MAX - 1)
+    let other = head.find((item) => item.key === 'other')
+    if (other === undefined) {
+      other = { key: 'other', label: PART_LABELS.other, tokens: 0 }
+      head.push(other)
+    }
+    for (const item of sorted.slice(PART_MAX - 1)) other.tokens += item.tokens
+    head.sort(byTokensDesc)
+  }
+
+  const rawSurface = numOr0(pressure.surfaceTokens)
+  const surfaceTokens = rawSurface > 0 ? rawSurface : sorted.reduce((sum, item) => sum + item.tokens, 0)
+  // parts 合计（含 system / tools）。**实测 DSH 的 surfaceTokens 不含工具定义**：
+  // 长会话实测 surfaceTokens=229560，而 system+tools+四个分类合计 244393，差值正好 = toolsTokens(14833)。
+  // 所以占比的分母用 partsTokens（这样各条 share 加起来是 1.0），surfaceTokens 保持 DSH 原值不动
+  // —— 它还要用来算 projectedTokens。
+  const partsTokens = sorted.reduce((sum, item) => sum + item.tokens, 0)
+  const pressureTokens = numOr0(pressure.pressureTokens)
+  const sampled = numOr0(pressure.sampledSurfaceTokens)
+  // 下一次请求的预计用量（界面百分比分子）＝ 上次真实 prompt 用量 + 那之后新增的表面内容。
+  // 没有 pressure 读数时退回 surfaceTokens（就是当前上下文总览），有读数但没采样值时不加增量，避免重复计。
+  const projectedTokens = pressureTokens > 0
+    ? pressureTokens + (sampled > 0 ? Math.max(0, surfaceTokens - sampled) : 0)
+    : surfaceTokens
+
+  const hot = surface
+    .filter((item) => item !== null && typeof item === 'object' && numOr0(item.tokens) > 0)
+    .slice()
+    .sort((a, b) => numOr0(b.tokens) - numOr0(a.tokens))
+    .slice(0, HOT_MAX)
+    .map((item) => {
+      const cat = typeof item.cat === 'string' && item.cat.length > 0 ? item.cat : 'other'
+      let name = ''
+      if (typeof item.tool === 'string' && item.tool.length > 0) {
+        name = item.tool
+      } else if (typeof item.form === 'string' && item.form.length > 0) {
+        name = item.form
+      } else if (Array.isArray(item.calls)) {
+        // 助手消息没有 text，但记了这一步调了哪些工具 —— 用它当"这条是什么"的提示
+        name = item.calls.slice(0, 3).join(',')
+      }
+      name = name.slice(0, 48)
+      const text = typeof item.text === 'string' ? item.text.slice(0, HOT_TEXT_MAX) : ''
+      return {
+        seq: numOr0(item.seq),
+        cat,
+        label: PART_LABELS[cat] ?? cat,
+        tokens: numOr0(item.tokens),
+        name,
+        text,
+      }
+    })
+
+  const requests = Array.isArray(timeline.requests) ? timeline.requests : []
+  const lastRequest = requests.length > 0 ? requests[requests.length - 1] : null
+  const lastRequestTotal = lastRequest !== null && typeof lastRequest === 'object' ? numOr0(lastRequest.total) : 0
+
+  return {
+    sessionId: id,
+    source: 'projcache',
+    window: numOr0(pressure.contextWindow),
+    surfaceTokens,
+    partsTokens,
+    pressureTokens,
+    sampledSurfaceTokens: sampled,
+    projectedTokens: projectedTokens,
+    parts: head.map((item) => ({
+      key: item.key,
+      label: item.label,
+      tokens: item.tokens,
+      share: partsTokens > 0 ? round4(item.tokens / partsTokens) : 0,
+    })),
+    hot,
+    model: typeof timeline.model === 'string'
+      ? timeline.model
+      : (typeof timeline.lastModel === 'string' ? timeline.lastModel : ''),
+    provider: typeof timeline.provider === 'string' ? timeline.provider : '',
+    requestCount: requests.length,
+    lastRequestTotal,
+    note: '',
+  }
+}
+
+/**
+ * 单会话成本（元）：未命中输入 1 / 缓存命中输入 0.02 / 输出 4（元每百万 token）。
+ * @param {number} uncached 未命中输入 token。
+ * @param {number} cacheRead 缓存命中输入 token。
+ * @param {number} output 输出 token。
+ * @returns {number} 保留 4 位小数的金额（元）。
+ */
+function costCNYOf(uncached, cacheRead, output) {
+  const raw = (numOr0(uncached) * COST_UNIT.uncachedPerM
+    + numOr0(cacheRead) * COST_UNIT.cacheReadPerM
+    + numOr0(output) * COST_UNIT.outputPerM) / 1000000
+  return round4(raw)
+}
+
+/**
+ * 从会话投影里取"这一条会话花了多少 token"。
+ * 优先用 `contextTimeline.val.cost`（按模型分桶、分 peak/off 时段，实测与 tokenUsage.totals 完全一致，
+ * 键形如 `{flash:{off:{uncached,cacheRead,cacheWrite,output}, peak:{…}}}`），
+ * 取不到时回落到 `tokenUsage.val.totals`（{uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}）。
+ *
+ * @param {unknown} doc 解析后的投影 JSON。
+ * @returns {{uncached:number, cacheRead:number, output:number, cacheWrite:number, costCNY:number,
+ *   rounds:number, turns:number, title:string, models:string[]}} 单会话用量。
+ */
+function parseSessionCost(doc) {
+  const empty = {
+    uncached: 0, cacheRead: 0, output: 0, cacheWrite: 0, costCNY: 0,
+    rounds: 0, turns: 0, title: '', models: [],
+  }
+  if (doc === null || doc === undefined || typeof doc !== 'object') return empty
+  const rows = projcacheRows(doc)
+  const timeline = rowVal(rows.contextTimeline)
+  const cost = timeline.cost
+  const models = []
+  let uncached = 0
+  let cacheRead = 0
+  let cacheWrite = 0
+  let output = 0
+  if (cost !== null && typeof cost === 'object') {
+    for (const model of Object.keys(cost)) {
+      const buckets = cost[model]
+      if (buckets === null || typeof buckets !== 'object') continue
+      models.push(model)
+      for (const bucket of Object.keys(buckets)) {
+        const item = buckets[bucket]
+        if (item === null || typeof item !== 'object') continue
+        uncached += numOr0(item.uncached)
+        cacheRead += numOr0(item.cacheRead)
+        cacheWrite += numOr0(item.cacheWrite)
+        output += numOr0(item.output)
+      }
+    }
+  }
+  if (uncached === 0 && cacheRead === 0 && output === 0) {
+    const totals = rowVal(rows.tokenUsage).totals
+    if (totals !== null && typeof totals === 'object') {
+      uncached = numOr0(totals.uncachedInputTokens)
+      cacheRead = numOr0(totals.cacheReadTokens)
+      cacheWrite = numOr0(totals.cacheWriteTokens)
+      output = numOr0(totals.outputTokens)
+    }
+  }
+  const stats = rowVal(rows.sessionStats)
+  const requests = Array.isArray(timeline.requests) ? timeline.requests : []
+  const rounds = numOr0(stats.steps) > 0 ? numOr0(stats.steps) : requests.length
+  const titleValue = rows.title === undefined || rows.title === null ? undefined : rows.title.val
+  return {
+    uncached,
+    cacheRead,
+    output,
+    cacheWrite,
+    costCNY: costCNYOf(uncached, cacheRead, output),
+    rounds,
+    turns: numOr0(stats.turns),
+    title: typeof titleValue === 'string' ? titleValue.trim() : '',
+    models,
+  }
+}
+
+/**
+ * 最贵会话排行：按 costCNY 降序取前 max 条；没有标题时给 sessionId 前 8 位。
+ * @param {Array<{sessionId:string, title?:string, uncached?:number, cacheRead?:number, output?:number}>} list 全部会话用量。
+ * @param {number} [max] 取几条。
+ * @returns {Array<{sessionId:string, title:string, costCNY:number}>} 排行。
+ */
+function rankSessionCosts(list, max) {
+  const limit = clampInt(max, 1, 50, TOP_MAX)
+  const items = Array.isArray(list) ? list : []
+  return items
+    .filter((item) => item !== null && typeof item === 'object' && typeof item.sessionId === 'string' && item.sessionId.length > 0)
+    .map((item) => {
+      const cost = costCNYOf(item.uncached, item.cacheRead, item.output)
+      const title = typeof item.title === 'string' && item.title.trim().length > 0
+        ? item.title.trim()
+        : item.sessionId.slice(0, 8)
+      return { sessionId: item.sessionId, title, costCNY: cost }
+    })
+    .filter((item) => item.costCNY > 0)
+    .sort((a, b) => (b.costCNY !== a.costCNY ? b.costCNY - a.costCNY : (a.sessionId < b.sessionId ? -1 : 1)))
+    .slice(0, limit)
+}
+
+/** 一天的原始累计（还没算钱）。 */
+function emptyDayTotals() {
+  return { uncached: 0, cacheRead: 0, output: 0, cacheWrite: 0, reasoning: 0, rounds: 0, ledgerCostCNY: 0 }
+}
+
+/**
+ * 把台账里"某一天"的 `{provider:{model:{…}}}` 加成一份原始累计。
+ * 台账字段实测：inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens /
+ * reasoningTokens / calls / cost。
+ * @param {unknown} day 台账 days[日期]。
+ * @returns {object} 原始累计。
+ */
+function sumLedgerDay(day) {
+  const out = emptyDayTotals()
+  if (day === null || typeof day !== 'object') return out
+  for (const provider of Object.keys(day)) {
+    const models = day[provider]
+    if (models === null || typeof models !== 'object') continue
+    for (const model of Object.keys(models)) {
+      const item = models[model]
+      if (item === null || typeof item !== 'object') continue
+      out.uncached += numOr0(item.inputTokens)
+      out.cacheRead += numOr0(item.cacheReadTokens)
+      out.cacheWrite += numOr0(item.cacheWriteTokens)
+      out.output += numOr0(item.outputTokens)
+      out.reasoning += numOr0(item.reasoningTokens)
+      out.rounds += numOr0(item.calls)
+      out.ledgerCostCNY += numOr0(item.cost)
+    }
+  }
+  return out
+}
+
+/** 原始累计 → 对外的展示结构（含按常量算出的 costCNY）。 */
+function finishDayTotals(raw) {
+  return {
+    costCNY: costCNYOf(raw.uncached, raw.cacheRead, raw.output),
+    uncached: raw.uncached,
+    cacheRead: raw.cacheRead,
+    output: raw.output,
+    cacheWrite: raw.cacheWrite,
+    reasoning: raw.reasoning,
+    rounds: raw.rounds,
+    ledgerCostCNY: round4(raw.ledgerCostCNY),
+  }
+}
+
+/** 本地日期键 YYYY-MM-DD（台账用的就是本地日期）。 */
+function dayKeyOf(date) {
+  const at = date instanceof Date ? date : new Date()
+  return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`
+}
+
+/**
+ * 台账按天聚合：今天 + 最近 days 天。
+ * 结构不认识（没 days）时返回全 0，调用方据此把 source 记为 none。
+ * @param {unknown} ledger 台账 JSON。
+ * @param {number} days 统计最近几天（1~90）。
+ * @param {Date|number} now 当前时间。
+ * @returns {{today:object, week:object}} 聚合结果。
+ */
+function aggregateLedger(ledger, days, now) {
+  const at = now instanceof Date ? now : new Date(numOr0(now) > 0 ? now : Date.now())
+  const span = clampInt(days, 1, 90, 7)
+  const todayKey = dayKeyOf(at)
+  const weekRaw = emptyDayTotals()
+  let todayRaw = null
+  const source = ledger !== null && typeof ledger === 'object' ? ledger.days : undefined
+  if (source !== null && source !== undefined && typeof source === 'object') {
+    for (let index = 0; index < span; index += 1) {
+      const key = dayKeyOf(new Date(at.getFullYear(), at.getMonth(), at.getDate() - index))
+      if (!Object.prototype.hasOwnProperty.call(source, key)) continue
+      const raw = sumLedgerDay(source[key])
+      if (key === todayKey) todayRaw = raw
+      weekRaw.uncached += raw.uncached
+      weekRaw.cacheRead += raw.cacheRead
+      weekRaw.output += raw.output
+      weekRaw.cacheWrite += raw.cacheWrite
+      weekRaw.reasoning += raw.reasoning
+      weekRaw.rounds += raw.rounds
+      weekRaw.ledgerCostCNY += raw.ledgerCostCNY
+    }
+  }
+  const start = new Date(at.getFullYear(), at.getMonth(), at.getDate() - (span - 1))
+  return {
+    today: Object.assign({ date: todayKey }, finishDayTotals(todayRaw ?? emptyDayTotals())),
+    week: Object.assign(
+      { days: span, from: dayKeyOf(start), to: todayKey },
+      finishDayTotals(weekRaw),
+    ),
+  }
+}
+
+/**
+ * 交接文件名校验：必须是纯文件名。
+ * 拒绝空串、路径分隔符、`..`、冒号，另外顺带挡掉 Windows 保留字符与控制字符、
+ * 长度超限、以点或空格结尾（Windows 会悄悄改掉这种名字）。
+ * @param {unknown} raw 请求里的 filename（缺省用 HANDOFF.md）。
+ * @returns {{ok:true, name:string}|{ok:false, error:string}} 校验结果。
+ */
+function parseHandoffFilename(raw) {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, name: HANDOFF_DEFAULT_NAME }
+  if (typeof raw !== 'string') return { ok: false, error: 'filename 必须是字符串' }
+  const name = raw.trim()
+  if (name.length === 0) return { ok: false, error: 'filename 不能为空' }
+  if (name.length > HANDOFF_NAME_MAX) return { ok: false, error: `filename 太长（上限 ${HANDOFF_NAME_MAX} 字符）` }
+  if (name === '.' || name === '..' || name.indexOf('..') >= 0) return { ok: false, error: 'filename 不能包含 ..' }
+  if (HANDOFF_BAD_CHARS.test(name)) return { ok: false, error: 'filename 不能包含路径分隔符或 : * ? " < > | 等字符' }
+  if (name.endsWith('.') || name.endsWith(' ')) return { ok: false, error: 'filename 不能以点或空格结尾' }
+  return { ok: true, name }
+}
+
+/**
+ * 交接正文校验：必须是非空字符串、UTF-8 字节数不超过上限。
+ * @param {unknown} text 请求里的 text。
+ * @param {number} [limit] 字节上限。
+ * @returns {{ok:true, bytes:number}|{ok:false, error:string}} 校验结果。
+ */
+function validateHandoffText(text, limit) {
+  const max = clampInt(limit, 1, 100000000, HANDOFF_TEXT_LIMIT)
+  if (typeof text !== 'string') return { ok: false, error: 'text 必须是字符串' }
+  if (text.trim().length === 0) return { ok: false, error: 'text 不能为空' }
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes > max) return { ok: false, error: `text 太大（${bytes} 字节，上限 ${max} 字节）` }
+  return { ok: true, bytes }
+}
+
+/**
+ * 交接文件的最终路径：cwd 必须是绝对路径，文件名必须是纯文件名，结果必须严格落在 cwd 内。
+ * 纯路径计算，不碰磁盘（目录是否存在由调用方另外检查）。
+ * @param {unknown} cwd 请求里的 cwd。
+ * @param {unknown} rawName 请求里的 filename。
+ * @returns {{ok:true, root:string, path:string, name:string}|{ok:false, error:string}} 结果。
+ */
+function resolveHandoffPath(cwd, rawName) {
+  if (typeof cwd !== 'string' || cwd.trim().length === 0) return { ok: false, error: 'cwd 必须是绝对路径' }
+  if (!isAbsolute(cwd.trim())) return { ok: false, error: 'cwd 必须是绝对路径' }
+  const nameCheck = parseHandoffFilename(rawName)
+  if (!nameCheck.ok) return nameCheck
+  const root = resolve(cwd.trim())
+  const target = resolve(root, nameCheck.name)
+  // 双重保险：再按"必须以 root + 分隔符开头"校验一次，防止将来改动把穿越放进来。
+  const prefix = root.endsWith(sep) ? root : root + sep
+  const left = process.platform === 'win32' ? target.toLowerCase() : target
+  const right = process.platform === 'win32' ? prefix.toLowerCase() : prefix
+  if (!left.startsWith(right)) return { ok: false, error: '解析出的路径不在 cwd 内' }
+  return { ok: true, root, path: target, name: nameCheck.name }
+}
+
+/** 目录是否存在且真的是目录。 */
+function directoryExists(dir) {
+  try {
+    return statSync(dir).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** 读投影文件成 JSON；读不到或坏了都返回 null（不抛异常）。 */
+function readJsonFile(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 找一个会话的投影文件：实测两种命名都存在（互斥，不会同时有），
+ * 22 个带 `session-` 前缀、28 个不带，所以两个都试。
+ * @param {string|undefined} sessionId 会话 id。
+ * @returns {string|null} 文件绝对路径；找不到或 id 形状不合法返回 null。
+ */
+function projcachePathFor(sessionId) {
+  if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId) || sessionId.indexOf('..') >= 0) return null
+  const prefixed = join(PROJCACHE_DIR, `session-${sessionId}.json`)
+  if (existsSync(prefixed)) return prefixed
+  const plain = join(PROJCACHE_DIR, `${sessionId}.json`)
+  if (existsSync(plain)) return plain
+  return null
+}
+
+/** 全部会话用量的扫描缓存（top 排行用；60 秒内复用，避免每次请求读 50 个文件）。 */
+let costTopCache = { at: 0, list: [] }
+
+/**
+ * 扫一遍全部会话投影，收集每个会话的 token 用量（给"最贵会话"排行用）。
+ * 单个文件坏掉就跳过，绝不影响整体。
+ * @returns {Array<object>} [{sessionId, title, uncached, cacheRead, output}]。
+ */
+function scanSessionCosts() {
+  const now = Date.now()
+  if (now - costTopCache.at < TOP_CACHE_MS) return costTopCache.list
+  const list = []
+  let files = []
+  try {
+    files = readdirSync(PROJCACHE_DIR)
+  } catch {
+    files = []
+  }
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+    const sessionId = file.replace(/^session-/, '').replace(/\.json$/, '')
+    if (!SESSION_ID_RE.test(sessionId)) continue
+    const doc = readJsonFile(join(PROJCACHE_DIR, file))
+    const parsed = parseSessionCost(doc)
+    if (parsed.uncached === 0 && parsed.cacheRead === 0 && parsed.output === 0) continue
+    list.push({
+      sessionId,
+      title: parsed.title,
+      uncached: parsed.uncached,
+      cacheRead: parsed.cacheRead,
+      output: parsed.output,
+    })
+  }
+  costTopCache = { at: now, list }
+  return list
+}
+
+/**
+ * 组装上下文占用接口的响应体（文件缺失 / JSON 坏了都给 source=none + note，绝不抛）。
+ * @param {string|undefined} wanted 会话 id（缺省时用当前会话）。
+ * @returns {object} 响应体（不含 ok）。
+ */
+function contextBody(wanted) {
+  const info = resolveSessionInfo(wanted)
+  if (typeof info.id !== 'string' || info.id.length === 0) {
+    return parseContextTimeline(null, null, '没有会话 id：地址加 ?sessionId=<id>，或先在本会话里发一条消息')
+  }
+  const file = projcachePathFor(info.id)
+  if (file === null) {
+    return parseContextTimeline(null, info.id, `没有找到该会话的投影文件（${PROJCACHE_DIR}）`)
+  }
+  const doc = readJsonFile(file)
+  if (doc === null) {
+    return parseContextTimeline(null, info.id, `投影文件读不出来或不是合法 JSON：${file}`)
+  }
+  return parseContextTimeline(doc, info.id, '')
+}
+
+/**
+ * 组装花费接口的响应体。
+ * 台账只按「日期 → provider → model」累计，**没有会话维度**，所以：
+ *   today / week ← 台账；session / top ← 会话投影（每会话的 cost + 标题）。
+ * @param {string|undefined} wanted 会话 id（缺省时用当前会话）。
+ * @param {number} days 最近几天。
+ * @param {number} now 当前时间戳。
+ * @returns {object} 响应体（不含 ok）。
+ */
+function costBody(wanted, days, now) {
+  const span = clampInt(days, 1, 90, 7)
+  const at = new Date(numOr0(now) > 0 ? now : Date.now())
+  const notes = []
+
+  const ledger = readJsonFile(USAGE_LEDGER_PATH)
+  const ledgerOk = ledger !== null && typeof ledger === 'object'
+    && ledger.days !== null && typeof ledger.days === 'object'
+  if (!ledgerOk) notes.push(`用量台账读不出来或结构不认识（${USAGE_LEDGER_PATH}），today/week 按 0 计`)
+  const aggregate = aggregateLedger(ledgerOk ? ledger : null, span, at)
+  if (span !== 7) notes.push(`week 统计的是最近 ${span} 天`)
+
+  const info = resolveSessionInfo(wanted)
+  const id = typeof info.id === 'string' && info.id.length > 0 ? info.id : null
+  let session = {
+    uncached: 0, cacheRead: 0, output: 0, cacheWrite: 0, costCNY: 0,
+    rounds: 0, turns: 0, title: '', models: [],
+  }
+  let sessionSource = 'none'
+  if (id !== null) {
+    const file = projcachePathFor(id)
+    const doc = file === null ? null : readJsonFile(file)
+    if (doc === null) {
+      notes.push('本条会话的 token 明细拿不到（投影文件缺失或损坏），session 按 0 计')
+    } else {
+      session = parseSessionCost(doc)
+      sessionSource = 'projcache'
+    }
+  } else {
+    notes.push('没有会话 id：session 一项按 0 计（地址可加 ?sessionId=<id>）')
+  }
+
+  const top = rankSessionCosts(scanSessionCosts(), TOP_MAX)
+  if (top.length === 0) notes.push('没有扫描到任何会话用量，top 为空')
+
+  return {
+    sessionId: id,
+    source: ledgerOk ? 'ledger' : 'none',
+    sessionSource,
+    unit: Object.assign({}, COST_UNIT),
+    session: {
+      uncached: session.uncached,
+      cacheRead: session.cacheRead,
+      output: session.output,
+      cacheWrite: session.cacheWrite,
+      costCNY: session.costCNY,
+      rounds: session.rounds,
+      turns: session.turns,
+      title: session.title,
+      models: session.models,
+    },
+    today: aggregate.today,
+    week: aggregate.week,
+    top,
+    note: notes.join('；'),
+  }
+}
+
+/**
+ * 把交接摘要写进文件（唯一一处写操作）。
+ * 文件已存在时先原样复制一份 `<同名>.bak` 再覆盖，避免把上一次的交接冲掉。
+ * @param {string} target 目标文件绝对路径。
+ * @param {string} text 正文。
+ * @returns {{bytes:number, replaced:boolean}} 写入结果。
+ */
+function writeHandoffFile(target, text) {
+  const bytes = Buffer.byteLength(text, 'utf8')
+  let replaced = false
+  if (existsSync(target)) {
+    copyFileSync(target, `${target}.bak`)
+    replaced = true
+  }
+  writeFileSync(target, text, 'utf8')
+  return { bytes, replaced }
+}
+
+/**
+ * 处理交接落盘请求（POST /api/greet-signoff/handoff）。
+ * @param {object} req 请求。
+ * @param {object} res 响应。
+ */
+function handleHandoff(req, res) {
+  const method = req.method ?? 'GET'
+  if (method !== 'POST') {
+    sendJson(res, 405, { ok: false, error: `method ${method} not allowed` })
+    return
+  }
+  readBody(req, HANDOFF_BODY_LIMIT).then((raw) => {
+    let parsed
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'body is not JSON' })
+      return
+    }
+    const body = parsed !== null && typeof parsed === 'object' ? parsed : {}
+    const pathCheck = resolveHandoffPath(body.cwd, body.filename)
+    if (!pathCheck.ok) {
+      sendJson(res, 400, { ok: false, error: pathCheck.error })
+      return
+    }
+    if (!directoryExists(pathCheck.root)) {
+      sendJson(res, 400, { ok: false, error: `cwd 目录不存在：${pathCheck.root}` })
+      return
+    }
+    const textCheck = validateHandoffText(body.text)
+    if (!textCheck.ok) {
+      sendJson(res, 400, { ok: false, error: textCheck.error })
+      return
+    }
+    try {
+      const written = writeHandoffFile(pathCheck.path, body.text)
+      console.log('[greet-signoff] handoff written:', pathCheck.path, `${written.bytes} bytes, replaced=${written.replaced}`)
+      sendJson(res, 200, { ok: true, path: pathCheck.path, bytes: written.bytes, replaced: written.replaced })
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: `写文件失败：${String(error?.message ?? error)}` })
+    }
+  }).catch((error) => {
+    sendJson(res, 400, { ok: false, error: String(error?.message ?? error) })
+  })
+}
+
 function sendJson(res, status, value) {
   const body = JSON.stringify(value)
   res.writeHead(status, {
@@ -881,6 +1601,31 @@ function handleApi(req, res) {
     })
     return
   }
+  // /api/greet-signoff/context → 上下文被谁撑大了：分类明细 + 最占地方的单个片段
+  // 数据源是本会话的投影文件，带 ?sessionId= 时按 id 精确查（缺省=当前会话）。
+  if (pathname === `${API_PATH}/context`) {
+    const rawUrl = String(req.url ?? '')
+    const idMatch = /[?&]sessionId=([^&]*)/.exec(rawUrl)
+    const wanted = idMatch === null ? undefined : decodeURIComponent(idMatch[1])
+    const info = resolveSessionInfo(wanted)
+    sendJson(res, 200, Object.assign({ ok: true, hostVersion: HOST_VERSION, exactSession: info.exact }, contextBody(wanted)))
+    return
+  }
+  // /api/greet-signoff/cost → 本条会话花了多少 / 今天与最近几天花了多少 / 最贵的会话是哪些
+  // 可带 ?sessionId=<id>&days=7（days 夹在 1~90）。任何数据缺失都只影响对应字段，接口本身始终 200。
+  if (pathname === `${API_PATH}/cost`) {
+    const rawUrl = String(req.url ?? '')
+    const idMatch = /[?&]sessionId=([^&]*)/.exec(rawUrl)
+    const wanted = idMatch === null ? undefined : decodeURIComponent(idMatch[1])
+    const daysMatch = /[?&]days=(\d{1,3})/.exec(rawUrl)
+    sendJson(res, 200, Object.assign({ ok: true, hostVersion: HOST_VERSION }, costBody(wanted, daysMatch === null ? 7 : Number(daysMatch[1]), Date.now())))
+    return
+  }
+  // /api/greet-signoff/handoff → 把"换会话交接摘要"落盘成一个文件（本插件唯一的写操作）
+  if (pathname === `${API_PATH}/handoff`) {
+    handleHandoff(req, res)
+    return
+  }
   if (method === 'GET') {
     sendJson(res, 200, { ok: true, path: FILE_PATH, hostVersion: HOST_VERSION, config: readConfig() })
     return
@@ -965,6 +1710,25 @@ export const __test = {
   normalize,
   normalizeCore,
   ruleTextWith,
+  // 诊断类接口（上下文 / 花费 / 交接）的纯逻辑
+  parseContextTimeline,
+  parseSessionCost,
+  rankSessionCosts,
+  aggregateLedger,
+  sumLedgerDay,
+  costCNYOf,
+  round4,
+  dayKeyOf,
+  parseHandoffFilename,
+  resolveHandoffPath,
+  validateHandoffText,
+  projcacheRows,
+  rowVal,
+  // 接口组装入口：单测里用假的 req/res 直接打这三个路由（不启 DSH，也不碰真实数据以外的文件）
+  contextBody,
+  costBody,
+  writeHandoffFile,
+  handleApi,
 }
 
 /** 自检/单测用：给定配置、统计与工作目录，算出模型会看到的规则文本。 */
@@ -981,5 +1745,16 @@ function ruleTextWith(config, stats, cwd) {
   lines.push('- 只有这些固定行有格式要求；正文照常回答，保持正常详略。')
   lines.push('- 包括工具调用后的最终回复在内，每一轮回复都适用；纯工具调用步骤不需要输出固定行。')
   lines.push('- 图片与字体样式属于页面显示，不要试图在正文里放置图片或 Markdown 图片语法。')
+  // 交接包（v1.14.0）：换会话时把摘要落成了工作区根目录的 HANDOFF.md —— 新会话开场先把它读过来，
+  // 免得上一条会话的结论随上下文一起沉底。只在文件确实存在时才提这一句，不打扰没有交接的会话。
+  if (typeof cwd === 'string' && cwd.length > 0) {
+    try {
+      if (existsSync(join(cwd, 'HANDOFF.md'))) {
+        lines.push('- 这个工作区有 HANDOFF.md（上一条会话留下的交接摘要）：开工前先用 read 工具读它，再动手。')
+      }
+    } catch {
+      /* 路径不可读就当没有 */
+    }
+  }
   return lines.join('\n')
 }

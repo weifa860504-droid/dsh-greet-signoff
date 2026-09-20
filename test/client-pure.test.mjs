@@ -70,7 +70,7 @@ const t = client.__test
 
 test('client.js 暴露了测试钩子', () => {
   assert.ok(t && typeof t === 'object', '缺少 __test 导出')
-  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode']) {
+  for (const name of ['normalizeFixedLine', 'foldFixedLine', 'matchLineText', 'compileWantedLine', 'resolveTemplate', 'normalize', 'validate', 'occupancyOf', 'formatTokens', 'rampColor', 'lineSimilarity', 'isPerCharAnimation', 'splitGraphemes', 'renderLineText', 'darkFromSignals', 'parseCssRgb', 'colorLuminance', 'chatCss', 'formatDuration', 'formatClock', 'tokensPerMinute', 'remainingTimeMs', 'averageTurnMs', 'budgetReading', 'formatWan', 'resolveBudgetMode', 'normalizeBudgetMode', 'budgetModeLabel', 'budgetModeHint', 'nextBudgetMode', 'pickOptions', 'formatCny']) {
     assert.equal(typeof t[name], 'function', `__test 缺少 ${name}`)
   }
 })
@@ -549,4 +549,213 @@ test('预算模式：胶囊点一下轮转「日常 → 大任务 → 省着聊 
   assert.ok(t.budgetModeHint('save').indexOf('5 万') >= 0, '省着聊的说明里有两条线')
   assert.equal(t.budgetModes.length, 4)
   assert.equal(t.budgetModeCycle.length, 4)
+})
+
+/* ── v1.14.0：设置页精简 + 花费 / 上下文 ───────────────────────────── */
+
+test('长尾选项：默认只列精选，但当前正在用的那一项永远保留', () => {
+  const all = [
+    { value: 'a', label: 'A' }, { value: 'b', label: 'B' },
+    { value: 'c', label: 'C' }, { value: 'd', label: 'D' },
+  ]
+  const prime = ['a', 'b']
+  assert.deepEqual(t.pickOptions(all, prime, false, 'a').map((x) => x.value), ['a', 'b'])
+  // 当前用的是冷门项：必须给它留着，否则下拉会显示成别的档，看起来像设置被改了
+  assert.deepEqual(t.pickOptions(all, prime, false, 'd').map((x) => x.value), ['a', 'b', 'd'])
+  // "全部"就是把原表还回来，而且是副本（不共享引用）
+  const full = t.pickOptions(all, prime, true, 'a')
+  assert.equal(full.length, 4)
+  assert.notEqual(full, all)
+})
+
+test('长尾选项：精选表真的是"少"的，且各自没有重复项', () => {
+  for (const list of [t.primeAnimations, t.primeSchemes, t.primeMarkers]) {
+    assert.ok(list.length <= 8, '精选不该超过 8 项')
+    assert.equal(new Set(list).size, list.length, '精选表里有重复项')
+  }
+})
+
+test('金额写法：分、角、元都读得出来，坏值不炸', () => {
+  assert.equal(t.formatCny(0.0023), '<¥0.01')
+  assert.equal(t.formatCny(0.006), '¥0.006')
+  assert.equal(t.formatCny(0.4), '¥0.40')
+  assert.equal(t.formatCny(0.42), '¥0.42')
+  assert.equal(t.formatCny(1.234), '¥1.23')
+  assert.equal(t.formatCny(0), '¥0')
+  assert.equal(t.formatCny(-3), '¥0')
+  assert.equal(t.formatCny(Number.NaN), '¥0')
+  assert.equal(t.formatCny(undefined), '¥0')
+})
+
+test('旧文案兼容：上限从 30 收到 8（一次性兜底用不了那么多）', () => {
+  assert.equal(t.legacyLinesMax, 8)
+  const many = Array.from({ length: 20 }, (_, i) => ({ text: '旧行 ' + i, style: 'greeting' }))
+  assert.equal(t.sanitizeLegacyLines(many).length, 8)
+  assert.equal(t.sanitizeLegacyLines(many)[7].text, '旧行 7')
+})
+
+test('v1.15.0 三格读数（配色 A 语义状态色 + C 数字胶囊底）：颜色随状态走，没数据就写 —', () => {
+  const palette = ['#2da44e', '#d99b1a', '#d93026']
+  const safe = t.dockKpiCells({
+    hasReading: true, occupancyText: '4.6 万', limitText: '/ 11 万',
+    costText: '0.061', elapsedText: '3 分', tone: 'ok', palette,
+  })
+  assert.equal(safe.length, 3, '永远是三格')
+  assert.deepEqual(safe.map((c) => c.label), ['上下文占用', '本条会话花费', '已聊时长'])
+  // 配色 A：占用那格的颜色就是状态本身
+  assert.equal(safe[0].color, '#2da44e')
+  assert.equal(safe[0].value, '4.6 万')
+  assert.equal(safe[0].suffix, '/ 11 万')
+  // 配色 C：数字后面垫一层同色淡底
+  assert.equal(safe[0].background, 'rgba(45,164,78,0.14)')
+  // 花费固定财神金、时长固定蓝
+  assert.equal(safe[1].value, '≈0.061')
+  assert.equal(safe[1].color, '#b8860b')
+  assert.equal(safe[2].value, '3 分')
+  assert.equal(safe[2].color, '#2563eb')
+
+  const warn = t.dockKpiCells({ hasReading: true, occupancyText: '8.6 万', limitText: '/ 11 万', tone: 'warn', palette })
+  assert.equal(warn[0].color, '#d99b1a')
+  const crit = t.dockKpiCells({ hasReading: true, occupancyText: '10.4 万', limitText: '/ 11 万', tone: 'critical', palette })
+  assert.equal(crit[0].color, '#d93026')
+  assert.equal(crit[0].background, 'rgba(217,48,38,0.14)')
+  // 深浅主题：胶囊底更透一点、金/蓝换亮一档（暗底上才看得清）
+  const dark = t.dockKpiCells({
+    hasReading: true, occupancyText: '4.6 万', limitText: '/ 11 万',
+    costText: '0.061', elapsedText: '3 分', tone: 'ok', palette, dark: true,
+  })
+  assert.equal(dark[0].background, 'rgba(45,164,78,0.24)')
+  assert.equal(dark[1].color, '#e6b84d')
+  assert.equal(dark[2].color, '#7aa2ff')
+  // 一个读数都没有：三格都写 "—"，且不给颜色/底色（写 0 会看起来像坏了）
+  const blank = t.dockKpiCells({ hasReading: false })
+  assert.deepEqual(blank.map((c) => c.value), ['—', '—', '—'])
+  assert.deepEqual(blank.map((c) => c.color), ['', '', ''])
+  assert.deepEqual(blank.map((c) => c.background), ['', '', ''])
+  assert.equal(blank[0].state, 'ok')
+})
+
+test('v1.16.0 预算档 / 实测速率两格：与前三格同款（标签 + 同色胶囊底），不要就不出现', () => {
+  const base = {
+    hasReading: true, occupancyText: '9 万', limitText: '/ 11 万', costText: '0.112',
+    elapsedText: '6 分', tone: 'ok', palette: ['#2da44e', '#d99b1a', '#d93026'],
+  }
+  const five = t.dockKpiCells(Object.assign({}, base, {
+    showMode: true, modeText: '日常', showRate: true, rateText: '~1.2 万/分',
+  }))
+  assert.equal(five.length, 5, '开两格就是五格')
+  assert.deepEqual(five.map((c) => c.label), ['上下文占用', '本条会话花费', '已聊时长', '预算档', '实测速率'])
+  // 预算档：紫 + 同色淡底（和前三格完全同一套做法）
+  assert.equal(five[3].value, '日常')
+  assert.equal(five[3].color, '#7c3aed')
+  assert.equal(five[3].background, 'rgba(124,58,237,0.14)')
+  // 实测速率：青（避开状态色绿，免得和"占用"混淆）
+  assert.equal(five[4].value, '~1.2 万/分')
+  assert.equal(five[4].color, '#0f766e')
+  // 本会话临时档要在胶囊里标出来
+  const scoped = t.dockKpiCells(Object.assign({}, base, { showMode: true, modeText: '大任务', modeSuffix: '本会话' }))
+  assert.equal(scoped[3].suffix, '本会话')
+  assert.equal(scoped.length, 4)
+  // 暗色主题换亮一档
+  const dark = t.dockKpiCells(Object.assign({}, base, {
+    showMode: true, modeText: '日常', showRate: true, rateText: '~1.2 万/分', dark: true,
+  }))
+  assert.equal(dark[3].color, '#c4b5fd')
+  assert.equal(dark[4].color, '#5eead4')
+  // 老调用方（不给 showMode/showRate）拿到的仍是最初三格 —— 向后兼容
+  assert.equal(t.dockKpiCells(base).length, 3)
+  // 速率还没读数：写 "—"，且不给颜色/底色
+  const noRate = t.dockKpiCells(Object.assign({}, base, { showMode: true, modeText: '日常', showRate: true }))
+  assert.equal(noRate[4].value, '—')
+  assert.equal(noRate[4].color, '')
+  assert.equal(noRate[4].background, '')
+})
+
+test('v1.17.0 第六格「到线约还有」：样式与前面几格同款，位置紧跟实测速率', () => {
+  const base = {
+    hasReading: true, occupancyText: '9 万', limitText: '/ 11 万', costText: '0.112',
+    elapsedText: '6 分', tone: 'ok', palette: ['#2da44e', '#d99b1a', '#d93026'],
+  }
+  const six = t.dockKpiCells(Object.assign({}, base, {
+    showMode: true, modeText: '日常', showRate: true, rateText: '~1.2 万/分',
+    showTurns: true, turnsText: '12 轮',
+  }))
+  assert.equal(six.length, 6, '开满就是六格')
+  assert.deepEqual(six.map((c) => c.label),
+    ['上下文占用', '本条会话花费', '已聊时长', '预算档', '实测速率', '到线约还有'])
+  // 第六格：玫红 + 同色淡底（和前面几格完全同一套做法）
+  assert.equal(six[5].key, 'turns')
+  assert.equal(six[5].value, '12 轮')
+  assert.equal(six[5].color, '#be185d')
+  assert.equal(six[5].background, 'rgba(190,24,93,0.14)')
+  // 暗色主题换亮一档
+  const darkTurns = t.dockKpiCells(Object.assign({}, base, { showTurns: true, turnsText: '12 轮', dark: true }))
+  assert.equal(darkTurns[3].color, '#f9a8d4')
+  // 轮数还没算出来：写 "—"，且不给颜色/底色（与其它格一致）
+  const blank = t.dockKpiCells(Object.assign({}, base, { showTurns: true }))
+  assert.equal(blank[3].value, '—')
+  assert.equal(blank[3].color, '')
+  assert.equal(blank[3].background, '')
+  // 不显式要就不出现（老调用方拿到的仍是最初三格）
+  assert.equal(t.dockKpiCells(base).length, 3)
+})
+
+test('数字胶囊底：任意十六进制色都能算出同色淡底，坏值不炸', () => {
+  assert.equal(t.tintOf('#2563eb', 0.14), 'rgba(37,99,235,0.14)')
+  assert.equal(t.tintOf('#fff'), 'rgba(255,255,255,0.14)')
+  assert.equal(t.tintOf('rgb(1,2,3)').startsWith('rgba('), true)
+})
+
+test('v1.14.0 源码契约：花费 / 明细 / 档位菜单 / 诊断默认隐藏都还在', () => {
+  assert.ok(SOURCE.includes('/context'), '缺"上下文构成明细"接口路径')
+  assert.ok(SOURCE.includes('/cost'), '缺"花费"接口路径')
+  assert.ok(SOURCE.includes('gs-parts-list'), '缺上下文构成明细的渲染')
+  assert.ok(SOURCE.includes('gs-dock-parts-toggle'), '缺明细面板的开关')
+  assert.ok(SOURCE.includes('gs-mode-menu'), '缺档位菜单（胶囊已从"轮转"改成"点开选"）')
+  assert.ok(SOURCE.includes('gs-dock-suggest'), '缺按客观计数给的建议行')
+  assert.ok(SOURCE.includes('showDiag'), '缺"诊断分区默认隐藏"的开关')
+  assert.ok(SOURCE.includes('notifyOnLine'), '缺到线系统通知')
+  assert.ok(SOURCE.includes('advOptions'), '缺"精选 / 全部"的选项范围开关')
+})
+
+test('v1.18.0 活跃时长：新会话按创建时间起算，旧会话不吞断档，按会话各自记账', () => {
+  const now = 1700000000000
+  // ① 首次见到、且会话是 5 分钟前刚建的：把"创建到现在"当作已聊
+  const fresh = t.activeElapsed(null, now, now - 5 * 60000)
+  assert.equal(fresh.totalMs, 5 * 60000)
+  assert.equal(fresh.lastAt, now)
+  // ② 恢复的旧会话（创建于 3 小时前）：不按创建时间起算 —— 这正是"别把上次的会话也算进来"
+  const revived = t.activeElapsed(null, now, now - 3 * 3600000)
+  assert.equal(revived.totalMs, 0)
+  // ③ 连续心跳：5 秒一步照累
+  const step = t.activeElapsed({ totalMs: 60000, lastAt: now - 5000 }, now, null)
+  assert.equal(step.totalMs, 65000)
+  // ④ 断档 20 分钟：这一段不累加，之前的账保留
+  const gap = t.activeElapsed({ totalMs: 60000, lastAt: now - 20 * 60000 }, now, null)
+  assert.equal(gap.totalMs, 60000)
+  // ⑤ 宿主半答的时间不确定时（传 null）绝不瞎算；脏值也不炸
+  assert.equal(t.activeElapsed(null, now, null).totalMs, 0)
+  assert.equal(t.activeElapsed(null, now, 'x').totalMs, 0)
+  assert.equal(t.activeElapsed({ totalMs: -5, lastAt: 0 }, now, null).totalMs, 0)
+  // 阈值与账本结构
+  assert.equal(t.activeIdleMaxMs, 5 * 60000)
+  assert.equal(t.activeFreshMaxMs, 30 * 60000)
+  assert.deepEqual(t.emptySampler().samples, [])
+})
+
+test('v1.18.0 实测速率：门槛放宽到 20 秒，采样不够时用轮次跃升斜率兜底', () => {
+  assert.equal(t.rateMinSpanMs, 20000)
+  const base = 1700000000000
+  const points = [{ t: base, used: 1000 }, { t: base + 40000, used: 5000 }]
+  // 40 秒涨 4000 → 6000 tok/分（旧的 60 秒门槛下这里会返回 null，格子就一直是 "—"）
+  assert.equal(t.tokensPerMinute(points, t.rateMinSpanMs), 6000)
+  // 不传门槛时行为不变（默认仍是 60 秒）
+  assert.equal(t.tokensPerMinute(points), null)
+  // 跃升兜底：两次跃升间隔 30 秒、最近一次增量 3000 → 6000 tok/分
+  assert.equal(t.rateFromJumps([base, base + 30000], [2500, 3000]), 6000)
+  // 间隔太短 / 数据不足 / 没增长：一律 null（宁可显示 "—"，不给假数字）
+  assert.equal(t.rateFromJumps([base, base + 3000], [2500, 3000]), null)
+  assert.equal(t.rateFromJumps([base], [3000]), null)
+  assert.equal(t.rateFromJumps(null, null), null)
+  assert.equal(t.rateFromJumps([base, base + 30000], [0, 0]), null)
 })
