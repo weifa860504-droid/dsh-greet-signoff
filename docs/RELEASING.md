@@ -82,11 +82,14 @@ dsh plugin --profile web add <本仓库绝对路径>
 dsh plugin --profile web add github:weifa860504-droid/dsh-greet-signoff
 ```
 
-装完**必须重启** `dsh web`（本包声明了组合层，页面刷新不够）。重启后检查三处：
+装完**必须重启** `dsh web`（本包声明了组合层，页面刷新不够）。重启后按下面四条人工验证：
 
-1. 输入框上方出现上下文占用导航条（空白新会话显示 `—`，发一条消息后出现百分比）；
-2. 「设置 → 开场收尾」有配置页，改动能保存并在下一次回复生效；
-3. 启动日志里没有 `greet-signoff` 相关的 `error`（服务缺失会打 `[greet-signoff] ... unavailable`）。
+1. 发一条消息后，**输入框上方不再出现任何卡片**（1.23.0 起上下文卡已整套移除；旧版本里这里是一条导航条）；
+2. 「设置 → 开场收尾 → 总开关」里**只有两个开关**（👑 开场语 / 🏁 收尾语），没有第三个；
+3. 开场语与收尾语**照常出现在回复的首尾**（样式按设置页里的配置贴），关掉某一个开关后对应那一行在下一轮回复里消失；
+4. `curl "http://127.0.0.1:3080/api/greet-signoff/cost?sessionId=<会话 id>&days=7"` **仍返回数据**
+   （本条会话 / 今天 / 近 7 天 / 最贵的几条）；顺带扫一眼启动日志里没有 `greet-signoff` 相关的 `error`
+   （服务缺失会打 `[greet-signoff] ... unavailable`）。
 
 > 不想打扰正在使用的实例时，可以先用备用端口空跑：
 > `node <npm 全局目录>/@deepseek-ai/dsh/lib/bin.js web --port 3099 --no-open`，
@@ -127,7 +130,7 @@ git tag v1.1.0 && git push origin v1.1.0
 | 路径 | 作用 |
 | --- | --- |
 | `index.mjs` | 宿主半：系统提示段、`GET/POST /api/greet-signoff`、图片资产与 `$DSH_HOME/greet-signoff.json` 读写 |
-| `client.js` | 浏览器半：设置页、通用页入口、输入区导航条、对话里固定行的样式 |
+| `client.js` | 浏览器半：设置页、通用页入口、对话里固定行的样式 |
 | `cordis.patch.yml` | 组合层：把本包作为一行插进 profile（`name` 必须与包名、目录名一致） |
 | `scripts/verify-manifest.mjs` | 发布自检 |
 | `docs/` | README 引用的截图与本文件 |

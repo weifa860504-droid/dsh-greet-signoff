@@ -10,7 +10,7 @@
  *   {
  *     greeting: { text, image, imageHeight, fontSize, fontWeight, color, animation, … },
  *     signOff:  { …同一结构… },
- *     warnPercent, criticalPercent, looseMatch
+ *     matchMode, onlyAssistant, pool, scenes, perWorkspace, switches
  *   }
  * 为了兼容早期版本，greeting / signOff 是字符串时按「只有文本、其余取默认」处理。
  *
@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.22.0'
+const HOST_VERSION = '1.23.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -112,7 +112,7 @@ const CLIENT_PATH = fileURLToPath(new URL('./client.js', import.meta.url))
 /** 表情中文名/关键词索引（1.2.0 起从 client.js 里搬出来，首次打开表情框才加载）。 */
 const EMOJI_INDEX_PATH = fileURLToPath(new URL('./emoji-zh.json', import.meta.url))
 
-/* ─── 诊断类接口（上下文占用 / 花费 / 交接落盘）的常量 ───────────────────── */
+/* ─── 诊断类接口（花费 / 交接落盘）的常量 ──────────────────────────────── */
 /** 会话投影缓存：`<DSH_HOME>/storages/session_projcache/sessions/{,session-}<sessionId>.json`。 */
 const PROJCACHE_DIR = join(DSH_HOME, 'storages', 'session_projcache', 'sessions')
 /** 用量台账：按「日期 → provider → model」累计（**没有**会话维度）。 */
@@ -131,34 +131,10 @@ const COST_UNIT = { uncachedPerM: 1, cacheReadPerM: 0.02, outputPerM: 4 }
 const COST_PRICE_MIN = 0
 const COST_PRICE_MAX = 1000
 const PRICE_PARAM_KEYS = ['priceIn', 'priceCache', 'priceOut']
-/** 上下文明细里每个片段分类的中文可读名；未知分类直接用原始 key 当标签。 */
-const PART_LABELS = {
-  system: '系统提示词',
-  tools: '工具定义',
-  inject: '记忆与注入',
-  assistant: '助手历史',
-  tool: '工具结果',
-  user: '用户历史',
-  other: '其它',
-}
-/** parts 最多几条，其余合并成 key=other 的一条。 */
-const PART_MAX = 12
-/** hot（最占地方的单个片段）最多几条。 */
-const HOT_MAX = 6
-/** hot 里附带的原文预览长度（字符）。 */
-const HOT_TEXT_MAX = 60
 /** 最贵会话 top 几条。 */
 const TOP_MAX = 5
 /** 扫描全部会话投影算 top 的缓存时长（毫秒）——避免每次请求都把 50 个文件读一遍。 */
 const TOP_CACHE_MS = 60000
-/** 速率统计的观察窗口（毫秒）：只看最近 45 分钟的请求记录，更早的曲线不代表"现在的速度"。 */
-const PACE_WINDOW_MS = 45 * 60 * 1000
-/** 速率至少要覆盖的时间跨度（毫秒）：不足就不给数字（避免把"同一秒内的几步"当成速度）。 */
-const PACE_MIN_SPAN_MS = 20000
-/** 每轮涨量参与均值计算的最近轮数上限。 */
-const PACE_TURN_KEEP = 12
-/** 单轮涨量给的"这是几万 tok"的展示上限（超过就写实际值，只用来挡住脏数据）。 */
-const PACE_RISE_MAX = 5000000
 /** 会话 id 允许的形状（同时也是路径穿越防线：只允许字母数字与 . _ -）。 */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 /** 交接摘要正文的字节上限。 */
@@ -199,8 +175,6 @@ const DEFAULT_LINE = {
 const DEFAULT_CONFIG = {
   greeting: Object.assign({}, DEFAULT_LINE, { text: '👋 你好，我是 DeepSeek Harness 助手。' }),
   signOff: Object.assign({}, DEFAULT_LINE, { text: '✅ 以上，随时叫我。' }),
-  warnPercent: 70,
-  criticalPercent: 85,
   /** 匹配模式：exact 逐字 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
   matchMode: 'loose',
   /** 只给助手的回复贴样式（用户消息、工具结果、思考面板都不贴）。 */
@@ -217,13 +191,12 @@ const DEFAULT_CONFIG = {
   /** 按工作区自动换文案：命中当前会话的工作目录时，用这一条的文案（优先级最高）。 */
   perWorkspace: { enabled: false, items: [] },
   /**
-   * 三个独立总开关（v1.22.0）：
-   *   greeting   开场语   —— 关掉后提示段里不再要求模型写这一行；
-   *   signOff    收尾语   —— 同上；
-   *   contextBar 上下文卡 —— 纯页面显示（输入框上方那条进度条/读数/到线横幅），关掉后整块不渲染。
+   * 两个独立总开关（v1.23.0）：
+   *   greeting 开场语 —— 关掉后提示段里不再要求模型写这一行；
+   *   signOff  收尾语 —— 同上。
    * 缺字段 = 开（老配置行为不变）；只有明确写成 false 才算关。
    */
-  switches: { greeting: true, signOff: true, contextBar: true },
+  switches: { greeting: true, signOff: true },
 }
 
 /** 一句池子文案的清洗：去首尾空白、丢掉空行、截到上限。 */
@@ -252,18 +225,17 @@ function sanitizePool(raw) {
 }
 
 /**
- * 三个总开关的清洗（v1.22.0）。
+ * 两个总开关的清洗（v1.23.0）。
  * 只认"明确写成 false"为关，其余一律为开 —— 老配置没有这个字段、坏值、字符串都能安全回落，
- * 保证"升级后功能突然消失"这种事不会发生。
+ * 保证"升级后功能突然消失"这种事不会发生（老配置里残留的 contextBar 字段直接忽略）。
  * @param {unknown} raw 原始字段。
- * @returns {{greeting: boolean, signOff: boolean, contextBar: boolean}} 清洗后的开关。
+ * @returns {{greeting: boolean, signOff: boolean}} 清洗后的开关。
  */
 function sanitizeSwitches(raw) {
   const src = raw !== null && typeof raw === 'object' ? raw : {}
   return {
     greeting: src.greeting !== false,
     signOff: src.signOff !== false,
-    contextBar: src.contextBar !== false,
   }
 }
 
@@ -535,8 +507,6 @@ function normalizeCore(raw) {
   const base = raw !== null && typeof raw === 'object' ? raw : {}
   const legacy = typeof base.greeting === 'string' || typeof base.signOff === 'string'
   const source = legacy ? { greeting: { text: base.greeting }, signOff: { text: base.signOff } } : base
-  const warnPercent = clampInt(base.warnPercent, 1, 99, DEFAULT_CONFIG.warnPercent)
-  const criticalPercent = clampInt(base.criticalPercent, 2, 100, DEFAULT_CONFIG.criticalPercent)
   // matchMode 是 1.2.0 的新字段；旧的布尔 looseMatch 仍能读（false = 逐字相同）
   const matchMode = base.matchMode === undefined
     ? (base.looseMatch === false ? 'exact' : 'loose')
@@ -544,8 +514,6 @@ function normalizeCore(raw) {
   return {
     greeting: sanitizeLine(source.greeting, DEFAULT_CONFIG.greeting),
     signOff: sanitizeLine(source.signOff, DEFAULT_CONFIG.signOff),
-    warnPercent,
-    criticalPercent: Math.max(warnPercent + 1, criticalPercent),
     matchMode,
     onlyAssistant: base.onlyAssistant !== false,
     legacyLines: sanitizeLegacyLines(base.legacyLines),
@@ -899,12 +867,10 @@ function ruleText() {
 
 /* ─── 诊断类接口的纯逻辑（不碰磁盘，全部可单测） ─────────────────────────
  *
- * 三块：
- *  ① 上下文占用：把会话投影文件里的 `contextPressure` / `contextTimeline` 解析成
- *     「谁把上下文撑大了」的分类明细（parseContextTimeline）；
- *  ② 花费：台账按天聚合 + 会话投影算单会话成本（aggregateLedger / parseSessionCost /
+ * 两块：
+ *  ① 花费：台账按天聚合 + 会话投影算单会话成本（aggregateLedger / parseSessionCost /
  *     rankSessionCosts / costCNYOf）；
- *  ③ 交接落盘：文件名与最终路径的校验（parseHandoffFilename / resolveHandoffPath /
+ *  ② 交接落盘：文件名与最终路径的校验（parseHandoffFilename / resolveHandoffPath /
  *     validateHandoffText）。
  * 全部 fail-safe：任何字段对不上都回落到"空数据 + note"，绝不抛异常。
  */
@@ -942,316 +908,6 @@ function rowVal(row) {
   if (row === null || typeof row !== 'object') return {}
   const value = row.val
   return value !== null && typeof value === 'object' ? value : {}
-}
-
-/** 组合分类：key 相同就累加 token（system/tools 的标量与其同名分类会合并）。 */
-function bumpPart(buckets, key, tokens) {
-  const amount = numOr0(tokens)
-  if (amount <= 0) return
-  const name = typeof key === 'string' && key.length > 0 ? key : 'other'
-  const current = buckets.get(name) ?? { key: name, label: PART_LABELS[name] ?? name, tokens: 0 }
-  current.tokens += amount
-  buckets.set(name, current)
-}
-
-/** 按 tokens 降序（同额按 key 升序，保证结果稳定可测）。 */
-function byTokensDesc(a, b) {
-  if (b.tokens !== a.tokens) return b.tokens - a.tokens
-  return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0)
-}
-
-/**
- * 空的节奏读数（数据拿不到时也保证字段齐全，前端不用做存在性判断）。
- * @param {number} windowMs 观察窗口。
- * @returns {object} 全空读数。
- */
-function emptyPace(windowMs) {
-  return {
-    source: 'none',
-    windowMs: typeof windowMs === 'number' && windowMs > 0 ? windowMs : PACE_WINDOW_MS,
-    requestCount: 0,
-    turnCount: 0,
-    lastRequestAt: null,
-    idleMs: null,
-    ratePerMinute: null,
-    rateFrom: null,
-    rateSamples: 0,
-    rateSpanMs: 0,
-    avgPerTurn: null,
-    lastRise: null,
-    rises: [],
-    msPerTurn: null,
-    lastTurnSteps: 0,
-  }
-}
-
-/**
- * 从投影的 `requests[]` 里算"节奏"：实测速率（token/分钟）与按轮统计的每轮涨量。
- *
- * 为什么要放宿主半算（v1.20.0）：浏览器半只能在"本页亲眼看过的读数变化"上采样 ——
- * 切会话 / 刷新页面后账本从空开始，于是「实测速率」和「到线还有几轮」刚打开会话时必然是空的；
- * 而且它只能按 5 秒刻度看占用跳变，一个刻度里塞进好几步时相邻跃升只差几十毫秒，
- * "最近两次跃升"的跨度永远不达标（实测 56~88ms），兜底恒为 null。
- * 投影文件里 `requests[]` 每条是 {time, turn, step, prompt, …}，prompt 就是那次请求真正喂进去的
- * token 数，天然带**轮次**与**时刻**——所以：
- *   · 速率 = 观察窗口内首末两条的 (prompt 差 / 时间差)，跨度不足 20 秒就不给数；
- *   · 每轮涨量 = 相邻两轮**轮末** prompt 之差（轮内 prompt 会因为工具结果被裁而下降，
- *     所以只取每轮的最后一个点，绝不用轮内涨量去均值 —— 那正是旧版"每轮涨量偏小"的根因）。
- * 全程 fail-safe：结构不认识、字段脏、时间倒挂都只让对应字段为空，绝不抛。
- *
- * @param {unknown} timeline `contextTimeline.val`。
- * @param {number} [now] 当前时间戳（缺省 Date.now()）。
- * @param {number} [windowMs] 观察窗口（缺省 45 分钟）。
- * @returns {object} 节奏读数。
- */
-function parsePace(timeline, now, windowMs) {
-  const at = typeof now === 'number' && Number.isFinite(now) && now > 0 ? now : Date.now()
-  const span = typeof windowMs === 'number' && Number.isFinite(windowMs) && windowMs > 0 ? windowMs : PACE_WINDOW_MS
-  const out = emptyPace(span)
-  if (timeline === null || timeline === undefined || typeof timeline !== 'object') return out
-  const raw = Array.isArray(timeline.requests) ? timeline.requests : []
-  if (raw.length === 0) return out
-
-  // 有效请求点：时刻与 prompt 都得是有限正数。排序一次，后面所有计算都基于它。
-  const points = []
-  for (const item of raw) {
-    if (item === null || typeof item !== 'object') continue
-    const time = numOr0(item.time)
-    const prompt = numOr0(item.prompt)
-    const turn = numOr0(item.turn)
-    if (time <= 0 || prompt <= 0) continue
-    points.push({ time, prompt, turn })
-  }
-  if (points.length === 0) return out
-  points.sort((a, b) => a.time - b.time)
-
-  out.source = 'projcache'
-  out.requestCount = points.length
-  out.lastRequestAt = points[points.length - 1].time
-  out.idleMs = Math.max(0, at - out.lastRequestAt)
-
-  // ── 速率：观察窗口内的首末两点 ───────────────────────────────────────────
-  const windowStart = at - span
-  const inWindow = points.filter((point) => point.time >= windowStart)
-  let ratePair = null
-  let rateFrom = null
-  if (inWindow.length >= 2) {
-    ratePair = [inWindow[0], inWindow[inWindow.length - 1]]
-    rateFrom = 'window'
-  } else if (points.length >= 2) {
-    // 窗口内点太少（长时间没聊、或这条会话今天就两条）→ 退回用最后两条记录，尽量给个数。
-    ratePair = [points[points.length - 2], points[points.length - 1]]
-    rateFrom = 'tail'
-  }
-  out.rateSamples = inWindow.length
-  if (ratePair !== null) {
-    const gap = ratePair[1].time - ratePair[0].time
-    const delta = ratePair[1].prompt - ratePair[0].prompt
-    out.rateSpanMs = Math.max(0, gap)
-    if (gap >= PACE_MIN_SPAN_MS && delta > 0) {
-      out.ratePerMinute = delta / (gap / 60000)
-      out.rateFrom = rateFrom
-    }
-  }
-
-  // ── 按轮：每轮只取"轮末"那一个点 ─────────────────────────────────────────
-  // 同时记下这一轮的**峰值**：饱和会话里 DSH 会裁剪工具结果，轮末 prompt 可能比轮首还低
-  // （实测 796967 → 785012），这时"轮末之差"会是负数，退回"轮内峰值相对上一轮末的涨幅"更有意义。
-  const ends = []
-  let current = null
-  for (const point of points) {
-    if (current === null || point.turn !== current.turn) {
-      if (current !== null) ends.push(current)
-      current = { turn: point.turn, time: point.time, prompt: point.prompt, peak: point.prompt, steps: 1 }
-      continue
-    }
-    current.time = point.time
-    current.prompt = point.prompt
-    current.steps += 1
-    if (point.prompt > current.peak) current.peak = point.prompt
-  }
-  if (current !== null) ends.push(current)
-  out.turnCount = ends.length
-  out.lastTurnSteps = ends.length > 0 ? ends[ends.length - 1].steps : 0
-
-  // 每轮涨量：相邻轮末之差。负数（上下文被压缩/裁剪）不算涨量，直接跳过。
-  const rises = []
-  for (let i = 1; i < ends.length; i += 1) {
-    const delta = ends[i].prompt - ends[i - 1].prompt
-    if (delta > 0 && delta <= PACE_RISE_MAX) rises.push(delta)
-  }
-  out.rises = rises.slice(-PACE_TURN_KEEP)
-  if (rises.length > 0) {
-    const window = rises.slice(-PACE_TURN_KEEP)
-    out.avgPerTurn = Math.round(window.reduce((sum, value) => sum + value, 0) / window.length)
-  }
-  if (ends.length >= 2) {
-    const prev = ends[ends.length - 2].prompt
-    const last = ends[ends.length - 1]
-    const net = last.prompt - prev
-    const fallback = last.peak - prev
-    const rise = net > 0 ? net : fallback
-    out.lastRise = rise > 0 && rise <= PACE_RISE_MAX ? rise : null
-  }
-
-  // 每轮耗时：轮末时刻的间隔均值（只认 0~6 小时的间隔，跨天的断档不算）。
-  const gaps = []
-  for (let i = 1; i < ends.length; i += 1) {
-    const gap = ends[i].time - ends[i - 1].time
-    if (gap > 0 && gap < 6 * 3600000) gaps.push(gap)
-  }
-  if (gaps.length > 0) {
-    const window = gaps.slice(-PACE_TURN_KEEP)
-    out.msPerTurn = Math.round(window.reduce((sum, value) => sum + value, 0) / window.length)
-  }
-
-  return out
-}
-
-/**
- * 解析会话投影里的上下文占用明细。
- *
- * 真实结构（2026-09-20 实查，50 个投影文件统计过）：
- *  - `record.rows.contextPressure.val` = {surfaceTokens, contextWindow, pressureTokens, sampledSurfaceTokens}
- *  - `record.rows.contextTimeline.val`  = {surface[], sums{}, systemTokens, toolsTokens, requests[],
- *                                          model, provider, lastModel, contextWindow, cost{}, timing{}, …}
- *  - `surface[]` 每项 = {seq, time, tokens, cat, text?, form?, calls?, tool?, imgs?, err?}，
- *    **cat 实测只有 user / inject / assistant / tool 四种**（没有 system / memory / tools 分类，
- *    系统提示词与工具定义是 contextTimeline 上的两个标量 systemTokens / toolsTokens）。
- *
- * @param {unknown} doc 解析后的投影 JSON（读不到时传 null）。
- * @param {string|undefined} sessionId 会话 id。
- * @param {string} [reason] 取不到数据时的原因，写进 note。
- * @param {number} [now] 当前时间戳（算"节奏"用；缺省 Date.now()）。
- * @returns {object} 响应体（不含 ok）。
- */
-function parseContextTimeline(doc, sessionId, reason, now) {
-  const id = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null
-  const at = typeof now === 'number' && Number.isFinite(now) && now > 0 ? now : Date.now()
-  const empty = {
-    sessionId: id,
-    source: 'none',
-    window: 0,
-    surfaceTokens: 0,
-    partsTokens: 0,
-    pressureTokens: 0,
-    sampledSurfaceTokens: 0,
-    projectedTokens: 0,
-    parts: [],
-    hot: [],
-    model: '',
-    provider: '',
-    requestCount: 0,
-    lastRequestTotal: 0,
-    pace: emptyPace(),
-    note: typeof reason === 'string' && reason.length > 0 ? reason : '拿不到该会话的上下文明细',
-  }
-  if (doc === null || doc === undefined || typeof doc !== 'object') return empty
-
-  const rows = projcacheRows(doc)
-  const timeline = rowVal(rows.contextTimeline)
-  const pressure = rowVal(rows.contextPressure)
-  const surface = Array.isArray(timeline.surface) ? timeline.surface : []
-  const pace = parsePace(timeline, at)
-
-  const buckets = new Map()
-  bumpPart(buckets, 'system', timeline.systemTokens)
-  bumpPart(buckets, 'tools', timeline.toolsTokens)
-  for (const item of surface) {
-    if (item === null || typeof item !== 'object') continue
-    const cat = typeof item.cat === 'string' && item.cat.length > 0 ? item.cat : 'other'
-    bumpPart(buckets, cat, item.tokens)
-  }
-  if (buckets.size === 0) {
-    return Object.assign({}, empty, { note: '投影文件里没有上下文明细（会话可能刚建立，或这一版 DSH 改了结构）', pace })
-  }
-
-  const sorted = [...buckets.values()].sort(byTokensDesc)
-  let head = sorted
-  if (sorted.length > PART_MAX) {
-    // 先只留 PART_MAX − 1 条，剩下的全并进 other，合并后总条数正好是 PART_MAX。
-    head = sorted.slice(0, PART_MAX - 1)
-    let other = head.find((item) => item.key === 'other')
-    if (other === undefined) {
-      other = { key: 'other', label: PART_LABELS.other, tokens: 0 }
-      head.push(other)
-    }
-    for (const item of sorted.slice(PART_MAX - 1)) other.tokens += item.tokens
-    head.sort(byTokensDesc)
-  }
-
-  const rawSurface = numOr0(pressure.surfaceTokens)
-  const surfaceTokens = rawSurface > 0 ? rawSurface : sorted.reduce((sum, item) => sum + item.tokens, 0)
-  // parts 合计（含 system / tools）。**实测 DSH 的 surfaceTokens 不含工具定义**：
-  // 长会话实测 surfaceTokens=229560，而 system+tools+四个分类合计 244393，差值正好 = toolsTokens(14833)。
-  // 所以占比的分母用 partsTokens（这样各条 share 加起来是 1.0），surfaceTokens 保持 DSH 原值不动
-  // —— 它还要用来算 projectedTokens。
-  const partsTokens = sorted.reduce((sum, item) => sum + item.tokens, 0)
-  const pressureTokens = numOr0(pressure.pressureTokens)
-  const sampled = numOr0(pressure.sampledSurfaceTokens)
-  // 下一次请求的预计用量（界面百分比分子）＝ 上次真实 prompt 用量 + 那之后新增的表面内容。
-  // 没有 pressure 读数时退回 surfaceTokens（就是当前上下文总览），有读数但没采样值时不加增量，避免重复计。
-  const projectedTokens = pressureTokens > 0
-    ? pressureTokens + (sampled > 0 ? Math.max(0, surfaceTokens - sampled) : 0)
-    : surfaceTokens
-
-  const hot = surface
-    .filter((item) => item !== null && typeof item === 'object' && numOr0(item.tokens) > 0)
-    .slice()
-    .sort((a, b) => numOr0(b.tokens) - numOr0(a.tokens))
-    .slice(0, HOT_MAX)
-    .map((item) => {
-      const cat = typeof item.cat === 'string' && item.cat.length > 0 ? item.cat : 'other'
-      let name = ''
-      if (typeof item.tool === 'string' && item.tool.length > 0) {
-        name = item.tool
-      } else if (typeof item.form === 'string' && item.form.length > 0) {
-        name = item.form
-      } else if (Array.isArray(item.calls)) {
-        // 助手消息没有 text，但记了这一步调了哪些工具 —— 用它当"这条是什么"的提示
-        name = item.calls.slice(0, 3).join(',')
-      }
-      name = name.slice(0, 48)
-      const text = typeof item.text === 'string' ? item.text.slice(0, HOT_TEXT_MAX) : ''
-      return {
-        seq: numOr0(item.seq),
-        cat,
-        label: PART_LABELS[cat] ?? cat,
-        tokens: numOr0(item.tokens),
-        name,
-        text,
-      }
-    })
-
-  const requests = Array.isArray(timeline.requests) ? timeline.requests : []
-  const lastRequest = requests.length > 0 ? requests[requests.length - 1] : null
-  const lastRequestTotal = lastRequest !== null && typeof lastRequest === 'object' ? numOr0(lastRequest.total) : 0
-
-  return {
-    sessionId: id,
-    source: 'projcache',
-    window: numOr0(pressure.contextWindow),
-    surfaceTokens,
-    partsTokens,
-    pressureTokens,
-    sampledSurfaceTokens: sampled,
-    projectedTokens: projectedTokens,
-    parts: head.map((item) => ({
-      key: item.key,
-      label: item.label,
-      tokens: item.tokens,
-      share: partsTokens > 0 ? round4(item.tokens / partsTokens) : 0,
-    })),
-    hot,
-    model: typeof timeline.model === 'string'
-      ? timeline.model
-      : (typeof timeline.lastModel === 'string' ? timeline.lastModel : ''),
-    provider: typeof timeline.provider === 'string' ? timeline.provider : '',
-    requestCount: requests.length,
-    lastRequestTotal,
-    pace,
-    note: '',
-  }
 }
 
 /**
@@ -1669,28 +1325,6 @@ function scanSessionCosts() {
 }
 
 /**
- * 组装上下文占用接口的响应体（文件缺失 / JSON 坏了都给 source=none + note，绝不抛）。
- * @param {string|undefined} wanted 会话 id（缺省时用当前会话）。
- * @returns {object} 响应体（不含 ok）。
- */
-function contextBody(wanted) {
-  const info = resolveSessionInfo(wanted)
-  const at = Date.now()
-  if (typeof info.id !== 'string' || info.id.length === 0) {
-    return parseContextTimeline(null, null, '没有会话 id：地址加 ?sessionId=<id>，或先在本会话里发一条消息', at)
-  }
-  const file = projcachePathFor(info.id)
-  if (file === null) {
-    return parseContextTimeline(null, info.id, `没有找到该会话的投影文件（${PROJCACHE_DIR}）`, at)
-  }
-  const doc = readJsonFile(file)
-  if (doc === null) {
-    return parseContextTimeline(null, info.id, `投影文件读不出来或不是合法 JSON：${file}`, at)
-  }
-  return parseContextTimeline(doc, info.id, '', at)
-}
-
-/**
  * 组装花费接口的响应体。
  * 台账只按「日期 → provider → model」累计，**没有会话维度**，所以：
  *   today / week ← 台账；session / top ← 会话投影（每会话的 cost + 标题）。
@@ -1903,42 +1537,6 @@ function handleApi(req, res) {
     })
     return
   }
-  // /api/greet-signoff/session → 进度条的"时间功能"要的两样东西：
-  //   ① 本会话的创建时间（浏览器半看不到 session.header.createdAt）；
-  //   ② 本会话上一轮统计。带 ?sessionId= 时按 id 精确查——进度条显示哪个会话就问哪个会话。
-  if (pathname === `${API_PATH}/session`) {
-    const rawUrl = String(req.url ?? '')
-    const idMatch = /[?&]sessionId=([^&]*)/.exec(rawUrl)
-    const wanted = idMatch === null ? undefined : decodeURIComponent(idMatch[1])
-    const info = resolveSessionInfo(wanted)
-    const stats = statsFor(info.id)
-    sendJson(res, 200, {
-      ok: true,
-      hostVersion: HOST_VERSION,
-      sessionId: info.id ?? null,
-      exactSession: info.exact,
-      startedAt: typeof info.startedAt === 'number' ? info.startedAt : null,
-      now: Date.now(),
-      stats: stats === undefined ? null : {
-        rounds: stats.rounds,
-        lastMs: stats.lastMs,
-        lastTokens: stats.lastTokens,
-        lastModel: stats.lastModel,
-        lastAt: typeof stats.lastAt === 'number' ? stats.lastAt : null,
-      },
-    })
-    return
-  }
-  // /api/greet-signoff/context → 上下文被谁撑大了：分类明细 + 最占地方的单个片段
-  // 数据源是本会话的投影文件，带 ?sessionId= 时按 id 精确查（缺省=当前会话）。
-  if (pathname === `${API_PATH}/context`) {
-    const rawUrl = String(req.url ?? '')
-    const idMatch = /[?&]sessionId=([^&]*)/.exec(rawUrl)
-    const wanted = idMatch === null ? undefined : decodeURIComponent(idMatch[1])
-    const info = resolveSessionInfo(wanted)
-    sendJson(res, 200, Object.assign({ ok: true, hostVersion: HOST_VERSION, exactSession: info.exact }, contextBody(wanted)))
-    return
-  }
   // /api/greet-signoff/cost → 本条会话花了多少 / 今天与最近几天花了多少 / 最贵的会话是哪些
   // 可带 ?sessionId=<id>&days=7（days 夹在 1~90）。任何数据缺失都只影响对应字段，接口本身始终 200。
   // v1.19.0 起还可带 ?priceIn=&priceCache=&priceOut=（元/百万 token，夹在 0~1000，非法/缺失回落内置默认价）：
@@ -2053,10 +1651,7 @@ export const __test = {
   normalize,
   normalizeCore,
   ruleTextWith,
-  // 诊断类接口（上下文 / 花费 / 交接）的纯逻辑
-  parseContextTimeline,
-  parsePace,
-  emptyPace,
+  // 诊断类接口（花费 / 交接）的纯逻辑
   parseSessionCost,
   rankSessionCosts,
   aggregateLedger,
@@ -2074,8 +1669,7 @@ export const __test = {
   validateHandoffText,
   projcacheRows,
   rowVal,
-  // 接口组装入口：单测里用假的 req/res 直接打这三个路由（不启 DSH，也不碰真实数据以外的文件）
-  contextBody,
+  // 接口组装入口：单测里用假的 req/res 直接打这两个路由（不启 DSH，也不碰真实数据以外的文件）
   costBody,
   writeHandoffFile,
   handleApi,
