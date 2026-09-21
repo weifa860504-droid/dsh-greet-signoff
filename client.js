@@ -3,10 +3,9 @@ var module = { exports: {} }; var exports = module.exports;
 "use strict";
 // 开场语与收尾语 — 常驻插件（浏览器半，手写产物，无构建步骤）
 //
-// 三处 UI：
+// 两处 UI：
 //   1) 设置 → 通用 里的「开场语与收尾语」行（内含完整编辑器）；
-//   2) 设置导航里的独立页「开场收尾」（同一个编辑器）；
-//   3) 输入框上方的卡片：只显示上下文占用进度条与超限提醒（开场/收尾两行不再在此重复展示）。
+//   2) 设置导航里的独立页「开场收尾」（同一个编辑器）。
 //
 // 配置的唯一真源是宿主侧的 JSON 文件，这里只通过同源接口读写：
 //   GET  /api/greet-signoff  → 读；POST /api/greet-signoff → 写（保存后立即生效）。
@@ -562,18 +561,16 @@ var DEFAULT_LINE = {
 var DEFAULTS = {
   greeting: Object.assign({}, DEFAULT_LINE, { text: "👋 你好，我是 DeepSeek Harness 助手。" }),
   signOff: Object.assign({}, DEFAULT_LINE, { text: "✅ 以上，随时叫我。" }),
-  warnPercent: 70,
-  criticalPercent: 85,
   matchMode: "loose",
   onlyAssistant: true,
   legacyLines: [],
   // 文案池：池子非空且开关打开时，每次回复从池子里挑一句（挑的动作在宿主半，页面只负责把池子里每一句都贴上样式）。
   pool: { enabled: false, mode: "random", greeting: [], signOff: [] },
-  // 场景：整份配置的快照（文案 + 样式 + 阈值 + 文案池），用于"工作 / 生活 / 深夜"一键整体切换。
+  // 场景：整份配置的快照（文案 + 样式 + 文案池），用于"工作 / 生活 / 深夜"一键整体切换。
   scenes: { active: "", items: [] },
   // 按工作区自动换文案：命中当前会话的工作目录时用这一条的文案（优先级最高）。
   perWorkspace: { enabled: false, items: [] },
-  // 三个独立总开关（v1.22.0）：开场语 / 收尾语 / 输入框上方那条上下文卡，各关各的。
+  // 两个独立总开关（v1.22.0）：开场语 / 收尾语，各关各的（第三个"上下文卡"开关随 v1.23.0 删卡一起删掉）。
   switches: { greeting: true, signOff: true }
 };
 
@@ -801,22 +798,6 @@ function css() {
     ".gs-legacy-row>.gs-input{flex:1;min-width:140px}",
     ".gs-diag{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
     ".gs-diag code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
-    /* 紧凑形态：不显示百分比气泡；纯文字形态：只留一行提示 */
-    /* 进度条下的时间行：已聊多久 / 还能聊多久（随秒走动，不是静态摆设） */
-    /* v1.19.0：时间行的「上一轮 ↑X.X 万」涨幅段（≥5 万标警示色，深色档换亮琥珀）+ 版本错配小字 */
-    /* 预算模式行：🎯 小胶囊（点一下切档，只影响本会话）+ 一句提示 */
-    ".gs-mode-hint{font-size:11px;opacity:.85}",
-    /* 预算档菜单（v1.14.0：胶囊从"点一下轮转"改成"点开选"，省得猜现在轮到哪一档了） */
-    /* v1.15.2：档位菜单挂到统一胶囊容器里，容器是圆角卡 —— 用 fixed 定位，菜单才不会被卡片边界裁掉 */
-    ".gs-mode-menu{position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);z-index:40;display:flex;flex-direction:column;gap:2px;min-width:216px;padding:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-l1,#fff));box-shadow:0 10px 28px rgba(0,0,0,.18)}",
-    ".gs-mode-item{display:flex;align-items:baseline;gap:8px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:0 0;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer}",
-    ".gs-mode-item:hover{background:var(--dsw-alias-interactive-bg-hover)}",
-    ".gs-mode-item b{font-size:13px}",
-    ".gs-mode-item span{color:var(--dsw-alias-label-tertiary)}",
-    ".gs-mode-item i{margin-left:auto;font-style:normal;font-size:11px;color:var(--dsw-alias-label-caption)}",
-    ".gs-mode-item-on{background:var(--dsw-alias-interactive-bg-hover)}",
-    /* 上下文构成明细（v1.14.0）：这些 token 是谁占的 —— 只说"用了多少"没法指导怎么省 */
-    /* 到线建议（v1.14.0）：按客观计数说一句"该抬线"或"该降档"，按钮就在旁边 */
     ".gs-fold{align-items:center;gap:6px;display:flex;cursor:pointer;user-select:none}",
     ".gs-fold-caret{color:var(--dsw-alias-label-tertiary);font-size:10px;width:10px}",
     ".gs-fold-sum{color:var(--dsw-alias-label-caption);margin-left:auto;font-size:12px}",
@@ -921,7 +902,7 @@ function css() {
     'html[data-gs-dark="1"] .gs-switch input:checked + .gs-switch-track{background:#30d158}',
     "@media (prefers-reduced-motion: reduce){.gs-switch-track,.gs-switch-thumb{transition:none !important}}",
     "@media (prefers-reduced-motion: reduce){.gs-line,.gs-line span{animation:none !important}}",
-    /* 系统开了"减少动态效果"时：进度条的呼吸告警、小车上下浮动、光标动画一并停掉 */
+    /* 系统开了"减少动态效果"时：开场/收尾两行的入场动画与光标动画一并停掉 */
   ].join("\n");
 }
 
@@ -1055,8 +1036,6 @@ function normalizeCore(raw) {
   var base = raw !== null && typeof raw === "object" ? raw : {};
   var legacy = typeof base.greeting === "string" || typeof base.signOff === "string";
   var source = legacy ? { greeting: { text: base.greeting }, signOff: { text: base.signOff } } : base;
-  var warn = clampInt(base.warnPercent, 1, 99, DEFAULTS.warnPercent);
-  var critical = clampInt(base.criticalPercent, 2, 100, DEFAULTS.criticalPercent);
   // matchMode 是 1.2.0 的新字段；旧的布尔 looseMatch 仍能读（false = 逐字相同）
   var matchMode = base.matchMode === undefined
     ? (base.looseMatch === false ? "exact" : "loose")
@@ -1064,8 +1043,6 @@ function normalizeCore(raw) {
   return {
     greeting: normalizeLine(source.greeting, DEFAULTS.greeting),
     signOff: normalizeLine(source.signOff, DEFAULTS.signOff),
-    warnPercent: warn,
-    criticalPercent: Math.max(warn + 1, critical),
     matchMode: matchMode,
     onlyAssistant: base.onlyAssistant !== false,
     legacyLines: sanitizeLegacyLines(base.legacyLines),
@@ -1294,7 +1271,7 @@ function validate(draft) {
 }
 
 /** 分区的默认展开状态：高频的四个打开，低频的收起（面板不至于太长）。 */
-var FOLD_DEFAULTS = { master: true, text: true, font: true, deco: true, scenes: false, alert: false, legacy: false, bar: false, diag: false };
+var FOLD_DEFAULTS = { master: true, text: true, font: true, deco: true, scenes: false, alert: false, legacy: false, diag: false };
 var FOLD_KEY = "gs.signoff.folds";
 
 /** 顶部快速跳转条：顺序就是面板里的顺序（标签短一点，一行放得下）。 */
@@ -1304,8 +1281,7 @@ var SECTION_NAV = [
   { key: "font", label: "字体" },
   { key: "deco", label: "外观" },
   { key: "scenes", label: "场景" },
-  { key: "alert", label: "提醒" },
-  { key: "bar", label: "进度条" },
+  { key: "alert", label: "行匹配" },
   { key: "cost", label: "成本" },
   { key: "legacy", label: "旧文案" },
   { key: "diag", label: "诊断" }
@@ -2011,7 +1987,7 @@ function Editor() {
 
   /**
    * 一个可折叠的分区卡片：标题行常驻，内容按需展开。
-   * 高频分区默认展开（文本/字体/外观），低频分区默认收起（上下文提醒/旧文案/进度条/诊断），
+   * 高频分区默认展开（文本/字体/外观），低频分区默认收起（行匹配/旧文案/诊断），
    * 这样面板不再是一条需要来回滚的长龙。展开状态记在浏览器本地。
    *
    * 注意：children 是**可变参数**（可以传多个元素）。最后一项如果是个"普通对象"（不是 React 元素），
@@ -2090,7 +2066,7 @@ function Editor() {
   function patchSwitch(key, value) {
     var next = Object.assign({}, draft.switches);
     next[key] = value === true;
-    var name = key === "greeting" ? "开场语" : (key === "signOff" ? "收尾语" : "上下文卡");
+    var name = key === "signOff" ? "收尾语" : "开场语";
     patchTop({ switches: next });
     setNotice("总开关：「" + name + "」已" + (value === true ? "打开" : "关闭") + "，正在保存…");
   }
@@ -2315,8 +2291,7 @@ function Editor() {
       .catch(function () { add(false, "自检请求失败（服务可能刚重启或没在跑）"); report(); });
   }
 
-  // 本地外观偏好提前取：下面「动效 / 配色 / 小车」那些"精选 vs 全部"的下拉要用它
-  // （原来只在进度条分区里取，位置太靠后）。
+  // 本地外观偏好提前取：下面「动效」那些"精选 vs 全部"的下拉要用它。
   var ui = useUiPrefs();
   // 花费台账（v1.14.0）：跨会话的今日 / 近 7 天 + 最贵几条，数据来自本机 usage-ledger.json。
   var costPair = React.useState(null);
@@ -2390,7 +2365,7 @@ function Editor() {
           "提示词里不再要求收尾那一行 —— 我回复时就不再写它了。文案与样式都留着。")
       ),
       React.createElement("div", { className: "gs-hint" },
-        "三个开关各存各的：可以只关上下文卡、只关收尾、或三个全关；两个文字开关改的是「提示词里要不要这一行」，所以是**下一次回复**生效。")
+        "两个开关各存各的：可以只关开场语、只关收尾、或两个全关；开关改的是「提示词里要不要这一行」，所以是**下一次回复**生效。")
     ),
     section("文本（会写进我回复的正文，可含表情）", "text",
       React.createElement("div", null,
@@ -2916,10 +2891,10 @@ function Editor() {
     )
   ];
 
-  // 花费与上下文（v1.14.0）：把"钱花在哪、上下文被谁撑大"摆到设置页，跨会话台账也在这。
+  // 花费台账（v1.14.0）：把"钱花在哪"摆到设置页，跨会话台账也在这。
   // 数据全部读本机文件（usage-ledger.json），不联网；宿主半是旧版就整段显示成"读不到"。
   var costHint = costInfo === null || costInfo === undefined
-    ? "还没读到台账（宿主半是旧版时这里会一直空着，不影响进度条）"
+    ? "还没读到台账（宿主半是旧版时这里会一直空着，不影响开场/收尾两行）"
     : "今天 ≈" + formatCny(costInfo.today !== null && costInfo.today !== undefined ? costInfo.today.costCNY : 0)
       + " · 近 " + String(costInfo.week !== null && costInfo.week !== undefined && typeof costInfo.week.days === "number" ? costInfo.week.days : 7) + " 天 ≈"
       + formatCny(costInfo.week !== null && costInfo.week !== undefined ? costInfo.week.costCNY : 0)
@@ -2932,7 +2907,7 @@ function Editor() {
         var name = typeof item.title === "string" && item.title.length > 0 ? item.title : String(item.sessionId === undefined ? "" : item.sessionId).slice(0, 8);
         return (index + 1) + ") " + name + " " + formatCny(item.costCNY);
       }).join(" · ");
-  body.push(section("花费与上下文（读本机台账，不联网）", "cost", grid("cost-grid", [
+  body.push(section("花费台账（读本机台账，不联网）", "cost", grid("cost-grid", [
       React.createElement("div", { className: "gs-cell gs-cell-wide", key: "costSum" },
         React.createElement("span", { className: "gs-label" }, "花了多少"),
         React.createElement("span", { className: "gs-hint" }, costHint)
@@ -2947,7 +2922,7 @@ function Editor() {
         : React.createElement("div", { className: "gs-cell gs-cell-wide", key: "costReconcile" },
             React.createElement("span", { className: "gs-label" }, "与台账对账"),
             React.createElement("span", {
-              className: costInfo.reconcile.gapRatio > 0.2 ? "gs-hint gs-dock-note-warn" : "gs-hint"
+              className: costInfo.reconcile.gapRatio > 0.2 ? "gs-hint gs-hint-error" : "gs-hint"
             },
               "本次算得 " + formatCny(costInfo.reconcile.computedCNY)
               + " · 台账 " + formatCny(costInfo.reconcile.ledgerCostCNY)
@@ -3186,10 +3161,6 @@ function fillComposer(text) {
 }
 
 /**
- * 上下文快满时，点「总结要点」要交给用户的那句话。
- * 注意：这里是"把要求准备好"，不代替用户按回车 —— 免得误触直接把话发出去。
- */
-/**
  * 交接包：摘要要落盘成工作区根目录的 HANDOFF.md，新会话开局才读得到（宿主提示段里也约定了"有就先读"）。
  * v1.19.0：落盘不再靠模型写文件 —— 模型只把摘要当正文输出并用两行标记包起来，前端监听到标记后调宿主
  * POST /handoff 写文件；省一次工具往返，也不怕它忘了写。落盘失败仍有剪贴板兜底。
@@ -3210,7 +3181,7 @@ var HANDOFF_PROMPT = "请把本次会话整理成一份交接摘要：目标、�
  * 稳定语义钩子，钩子变了就退回"任意同时含两个标记的元素"，保证功能不因属性改名而失效。
  */
 var HANDOFF_API = API + "/handoff";
-/** 落盘结果显示在哪：进度条组件挂上时把 setSumNotice 写进来（拿不到就只留控制台）。 */
+/** 落盘结果显示在哪：设置页编辑器挂上时把 setSumNotice 写进来（拿不到就只留控制台）。 */
 var handoffNoticeSink = null;
 /** DOM 静止这么久才抓（流式期间不抓，免得落盘半截）；太短的片段不落盘（多半是误抓，输入框里那句"要求"也含标记）。 */
 var HANDOFF_SCAN_DELAY_MS = 900;
@@ -3264,7 +3235,7 @@ function fetchWorkspaceCwd() {
     .catch(function () { return null; });
 }
 
-/** 交给宿主落盘：任何失败都只提示 + 剪贴板兜底，绝不抛（不能把进度条搞坏）。 */
+/** 交给宿主落盘：任何失败都只提示 + 剪贴板兜底，绝不抛（不能把编辑器搞坏）。 */
 function submitHandoff(text) {
   if (typeof text !== "string" || text.length === 0) return;
   handoffWatch.busy = true;
@@ -3971,7 +3942,7 @@ function installChatStyler(ctx) {
   /** 该节点是否位于"不该被当成正文固定行"的区域（思考面板、本插件自己的面板/预览/提示）。 */
   function isFixedLineExcluded(node) {
     if (node.closest === undefined) return false;
-    return node.closest('[class*="reasoning"], [class*="Reasoning"], [class*="thinking"], [class*="Thinking"], .gs-dock, .gs-panel, .gs-preview, .gs-tip') !== null;
+    return node.closest('[class*="reasoning"], [class*="Reasoning"], [class*="thinking"], [class*="Thinking"], .gs-panel, .gs-preview, .gs-tip') !== null;
   }
 
   /**

@@ -246,10 +246,8 @@ npm pack --dry-run                     # 预览真正会被打包的文件
 
 发版流程（含 CI 启用与 npm 发布步骤）见 [docs/RELEASING.md](docs/RELEASING.md)。
 
-> README 里的两张预览图（`docs/preview-chat.png`、`docs/preview-settings.png`）按插件自身的类名与 CSS 规则还原渲染，
-> 用于展示当前版本的真实布局；数值为示意值。改动 UI 后请同步重拍。
-> ⚠️ 两张图目前都还是 **1.22.0** 拍的旧图：`preview-chat.png` 里还有已被移除的输入框上方卡片，
-> `preview-settings.png` 里还有本版已删除的两个分区（外观类与阈值类），**均待重拍**。
+> README 里的两张预览图（`docs/preview-chat.png`、`docs/preview-settings.png`）都是 **1.23.0** 从真实页面无头截的：
+> 对话图里只有开场语 / 收尾语两行（输入框上方已无插件卡片），设置图里是删卡后的分区与跳转胶囊。改动 UI 后请同步重拍。
 
 ## 许可
 
