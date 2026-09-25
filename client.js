@@ -425,7 +425,7 @@ var LEGACY_LINES_MAX = 8;
 /** 匹配模式：exact 逐字相同 / loose 宽松（忽略大小写、空白、全半角与首尾标点）/ fuzzy 近似容错。 */
 var MATCH_MODES = ["exact", "loose", "fuzzy"];
 /** 客户端半的版本号（诊断区显示；与 package.json 的 version 保持一致）。 */
-var CLIENT_VERSION = "1.23.0";
+var CLIENT_VERSION = "1.24.0";
 
 /** 匹配模式的中文名（折叠标题与诊断区显示用）。 */
 function matchModeLabel(mode) {
@@ -638,7 +638,7 @@ function sanitizeScenes(raw) {
 }
 
 /** 文案池：最多几句、每句多长、两种挑法（与宿主半保持一致）。 */
-var POOL_MAX = 20;
+var POOL_MAX = 50; // v1.24.0：20 → 50（必须与宿主半 index.mjs 同值；超出的句子会被静默截断）
 var POOL_LINE_MAX = 200;
 var POOL_MODES = ["random", "sequence"];
 
@@ -680,17 +680,6 @@ function sanitizePool(raw) {
 function css() {
   return [
     ".gs-panel{box-sizing:border-box;width:100%;padding:0 0 74px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
-    /* ── 新版布局：吸顶头部（标签页 + 实时预览）+ 可折叠分区卡片 ── */
-    // 预览跟着滚动吸在顶上，改下面的参数时不用滚回去看效果。
-    ".gs-stickyhead{position:sticky;top:-2px;z-index:6;padding:10px 0 8px;background:var(--dsw-alias-bg-base);box-shadow:0 6px 10px -8px rgba(0,0,0,.28)}",
-    ".gs-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);margin-top:10px;overflow:hidden;scroll-margin-top:196px}",
-    ".gs-card>.gs-fold{padding:10px 12px}",
-    ".gs-card>.gs-fold-open{border-bottom:1px solid var(--dsw-alias-border-l2)}",
-    ".gs-fold-body{padding:4px 12px 12px}",
-    // 顶部预览卡片：虚线框、更紧凑；非当前编辑的那行淡一些
-    ".gs-preview{margin-top:8px;padding:8px 10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);flex-direction:column;gap:4px;display:flex}",
-    ".gs-preview-line{opacity:.55;transition:opacity .15s ease}",
-    ".gs-preview-line.gs-preview-on{opacity:1}",
     ".gs-field{flex-direction:column;gap:4px;margin-top:10px;display:flex}",
     ".gs-label{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
     ".gs-hint{color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}",
@@ -716,7 +705,7 @@ function css() {
     ".gs-color{width:36px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:0 0}",
     // 这个类同时用在 <button> 和 <label>（"导入配置""选择图片"是靠 label+隐藏 input 触发选文件的）。
     // button 由 UA 样式自动把文字垂直居中、且 box-sizing:border-box；label 两者都没有，
-    // 在 .gs-actions（flex）里被块化后就成了"文字贴顶、盒子还高 2px"。所以这里自己居中 + 显式 border-box。
+    // 在 .gs-dfoot（flex）里被块化后就成了"文字贴顶、盒子还高 2px"。所以这里自己居中 + 显式 border-box。
     ".gs-btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:0 0;color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}",
     ".gs-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
     ".gs-btn:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
@@ -724,17 +713,10 @@ function css() {
     /* 主按钮悬停时必须保住文字颜色：否则会变成"背景浅、文字也浅"→字像是消失了 */
     ".gs-btn-on:hover:not(:disabled){border-color:transparent;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1);opacity:.86}",
     ".gs-saved{margin-left:auto;color:var(--dsw-alias-label-tertiary);font-size:12px}",
-    ".gs-tabs{gap:6px;display:flex}",
-    // 顶部快速跳转条：7 个分区一键展开并跳过去 + 全部展开/收起（不用在一堆折叠卡片里翻）。
-    ".gs-quicknav{gap:6px;flex-wrap:wrap;display:flex;margin-top:6px;align-items:center}",
-    ".gs-chip{height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:22px;cursor:pointer}",
-    ".gs-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
-    ".gs-quicknav-gap{margin-left:auto}",
     // 文案池：与上面的固定文案用一条虚线分开，视觉上属于"这一行的进阶用法"。
     ".gs-pool{margin-top:10px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l2);flex-direction:column;gap:6px;display:flex}",
     ".gs-pool-head{justify-content:space-between;width:100%}",
     ".gs-pool-text{min-height:70px}",
-    // 阈值提醒条：左提示右按钮，点过「总结要点」后下面多一行小字说明
     // 场景：一排"场景名 + 覆盖 + 删除"，窄面板会自动换行
     ".gs-scene-list{flex-wrap:wrap;gap:6px;display:flex;margin:6px 0}",
     ".gs-scene-item{align-items:center;gap:2px;display:inline-flex}",
@@ -760,14 +742,6 @@ function css() {
     ".gs-selfcheck-ok{border-color:var(--dsw-alias-state-success-primary,var(--dsw-alias-border-l2))}",
     ".gs-tab{height:26px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}",
     ".gs-tab-on{border-color:transparent;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1)}",
-    ".gs-mark{height:30px;min-width:36px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:0 0;color:var(--dsw-alias-label-primary);font-size:17px;line-height:1;cursor:pointer}",
-    ".gs-mark:hover{background:var(--dsw-alias-interactive-bg-hover)}",
-    ".gs-mark.gs-tab-on{border-color:transparent;background:var(--dsw-alias-label-primary)}",
-    ".gs-scheme{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:0 0;color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}",
-    ".gs-scheme:hover{background:var(--dsw-alias-interactive-bg-hover)}",
-    ".gs-scheme-on{border-color:var(--dsw-alias-label-primary)}",
-    ".gs-scheme-bar{width:34px;height:8px;border-radius:999px;display:inline-block}",
-    ".gs-sec-title{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin-bottom:6px}",
     ".gs-row2{align-items:center;gap:8px;display:flex;margin-top:8px;min-width:0;flex-wrap:wrap}",
     ".gs-row2>.gs-label{flex:none;width:52px}",
     /* 两列自适应网格：窄栏自动落成单列，宽栏并排，纵向省一半高度 */
@@ -784,7 +758,51 @@ function css() {
     ".gs-num{width:66px;flex:none;text-align:center;padding:4px 6px}",
     ".gs-select{height:30px;padding:4px 8px;font-size:13px}",
     ".gs-file{display:none}",
-    ".gs-actions{position:sticky;bottom:0;z-index:7;margin-top:10px;padding:10px 0 6px;gap:8px;align-items:center;background:var(--dsw-alias-bg-base);border-top:1px solid var(--dsw-alias-border-l2);display:flex;flex-wrap:wrap}",
+    /* ── 布局（v1.24.0）：预览为主 + 参数表 ─────────────────────────────────
+       左栏＝按真实样式渲染的预览 + 总开关；右栏＝参数表（一行一个参数，可搜可跳）。
+       折叠卡片、吸顶动作条与顶部快速跳转药丸都已删除，对应的死 CSS 一并清掉。 */
+    ".gs-panel.gs-d{padding-bottom:12px}",
+    ".gs-dtop{position:sticky;top:-2px;z-index:7;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 0;background:var(--dsw-alias-bg-base);border-bottom:1px solid var(--dsw-alias-border-l2)}",
+    ".gs-dseg{display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;flex:none}",
+    ".gs-dseg>button{height:27px;padding:0 13px;border:0;background:0 0;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12.5px;cursor:pointer}",
+    ".gs-dseg>button:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+    ".gs-dseg>button.gs-dseg-on{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1);font-weight:600}",
+    ".gs-dwrap{container-type:inline-size;margin-top:10px}",
+    ".gs-dgrid{display:grid;grid-template-columns:minmax(208px,.88fr) minmax(282px,1.12fr);gap:14px;align-items:start}",
+    ".gs-dside{display:flex;flex-direction:column;gap:10px;position:sticky;top:46px}",
+    /* 面板（设置抽屉）自己变窄时落成单列 —— 用**容器查询**而不是视口查询：
+       抽屉只是窗口里的一小块，视口很宽时它也可能只有 500 多像素。 */
+    "@container (max-width:460px){.gs-dgrid{grid-template-columns:1fr}.gs-dside{position:static}}",
+    /* 老浏览器（不支持容器查询）退回视口查询，至少不会挤成一团 */
+    "@supports not (container-type: inline-size){@media (max-width:760px){.gs-dgrid{grid-template-columns:1fr}.gs-dside{position:static}}}",
+    ".gs-dmain{min-width:0}",
+    ".gs-dnotes{display:flex;flex-direction:column;gap:4px;margin-top:8px}",
+    ".gs-dpvcard{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:10px}",
+    ".gs-dpvrow{display:flex;gap:8px;align-items:flex-start;margin-top:6px;padding:6px 8px;border:1px solid transparent;border-radius:9px;cursor:pointer}",
+    ".gs-dpvrow:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+    ".gs-dpvrow.gs-dpv-on{border-color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}",
+    ".gs-dpvtag{flex:none;width:26px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:22px}",
+    ".gs-dpvline{min-width:0;overflow:hidden}",
+    ".gs-dfilter{position:sticky;top:46px;z-index:6;display:flex;gap:8px;align-items:center;padding:4px 0 8px;background:var(--dsw-alias-bg-base)}",
+    ".gs-dsec{border-top:1px solid var(--dsw-alias-border-l2);margin-top:12px;padding-top:8px}",
+    ".gs-dsec:first-child{border-top:0;margin-top:0;padding-top:0}",
+    ".gs-dsec-h{display:flex;align-items:baseline;gap:8px;margin:0 0 2px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-tertiary)}",
+    ".gs-dsec-h .gs-dsec-sum{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--dsw-alias-label-caption)}",
+    ".gs-dsec-b>.gs-grid{grid-template-columns:1fr;gap:0}",
+    ".gs-dsec-b>.gs-grid>.gs-cell{padding:3px 0;border-bottom:1px solid var(--dsw-alias-border-l2);align-items:center}",
+    ".gs-dsec-b>.gs-grid>.gs-cell:last-child{border-bottom:0}",
+    ".gs-dsec-b>.gs-grid>.gs-cell>.gs-label{width:92px;flex:none}",
+    ".gs-dsec-b>.gs-grid>.gs-cell>.gs-cellgroup{flex:1;min-width:0}",
+    ".gs-drow{display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}",
+    ".gs-drow:last-child{border-bottom:0}",
+    ".gs-drow-k{width:92px;flex:none;padding-top:5px}",
+    ".gs-drow-v{flex:1;min-width:0}",
+    ".gs-dsec .gs-master-item{padding:4px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}",
+    ".gs-dsec .gs-master-item:last-child{border-bottom:0}",
+    ".gs-dsec .gs-preset-grid{margin-top:2px}",
+    ".gs-dfoot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l2)}",
+    ".gs-row-hide{display:none !important}",
+    ".gs-sec-hide{display:none !important}",
     ".gs-tip{position:absolute;left:0;bottom:calc(100% + 6px);z-index:6;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:12px;line-height:16px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s ease}",
     /* 动态变量小标签 */
     ".gs-tagbtn{padding:1px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:0 0;color:var(--dsw-alias-label-secondary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;cursor:pointer}",
@@ -798,9 +816,6 @@ function css() {
     ".gs-legacy-row>.gs-input{flex:1;min-width:140px}",
     ".gs-diag{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
     ".gs-diag code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
-    ".gs-fold{align-items:center;gap:6px;display:flex;cursor:pointer;user-select:none}",
-    ".gs-fold-caret{color:var(--dsw-alias-label-tertiary);font-size:10px;width:10px}",
-    ".gs-fold-sum{color:var(--dsw-alias-label-caption);margin-left:auto;font-size:12px}",
     /* 对话正文里的开场/收尾行：只加类与样式，不插入/移动任何节点（避免动到 React 的 DOM） */
     ".gs-chat-line{white-space:pre-wrap}",
     ".gs-chat-line.gs-chat-img::before{content:'';display:inline-block;background-position:left center;background-repeat:no-repeat;background-size:contain;vertical-align:-0.16em;margin-right:6px}",
@@ -1270,9 +1285,8 @@ function validate(draft) {
   return null;
 }
 
-/** 分区的默认展开状态：高频的四个打开，低频的收起（面板不至于太长）。 */
-var FOLD_DEFAULTS = { master: true, text: true, font: true, deco: true, scenes: false, alert: false, legacy: false, diag: false };
-var FOLD_KEY = "gs.signoff.folds";
+/* 分区不再折叠（v1.24.0 布局：右栏参数表全可见，靠搜索框与「跳到分区」下拉找），
+   折叠状态那套（常量 + localStorage 读写 + 展开/收起助手）随折叠卡片一起删掉，不留死代码。 */
 
 /** 顶部快速跳转条：顺序就是面板里的顺序（标签短一点，一行放得下）。 */
 var SECTION_NAV = [
@@ -1287,27 +1301,7 @@ var SECTION_NAV = [
   { key: "diag", label: "诊断" }
 ];
 
-/** 读取分区展开状态（浏览器本地；读不到就用默认）。 */
-function readFoldState() {
-  var out = Object.assign({}, FOLD_DEFAULTS);
-  try {
-    var raw = window.localStorage.getItem(FOLD_KEY);
-    if (typeof raw === "string" && raw.length > 0) {
-      var saved = JSON.parse(raw);
-      if (saved !== null && typeof saved === "object") {
-        Object.keys(FOLD_DEFAULTS).forEach(function (key) {
-          if (typeof saved[key] === "boolean") out[key] = saved[key];
-        });
-      }
-    }
-  } catch (error) { /* 隐私模式等：用默认值 */ }
-  return out;
-}
-
-/** 写入分区展开状态。 */
-function writeFoldState(state) {
-  try { window.localStorage.setItem(FOLD_KEY, JSON.stringify(state)); } catch (error) { /* 忽略写入失败 */ }
-}
+/* 折叠状态的读写随折叠卡片一起删掉（见上面的说明）。 */
 
 /* ─── 行渲染（编辑器预览与输入框上方卡片共用） ────────────────────────── */
 
@@ -1701,11 +1695,10 @@ function Editor() {
   var dirtyRef = React.useRef(false);
   // 每个编辑器实例一个唯一的 file input id（label 点击要指向它）
   var fileIdRef = React.useRef("gs-file-" + Math.random().toString(36).slice(2, 8));
-  // 各分区的展开状态：存在浏览器本地（不占配置、不用重启）。
-  // 默认只展开三个高频分区，其余收起，面板不再是一条需要来回滚的长龙。
-  var foldsPair = React.useState(readFoldState);
-  var folds = foldsPair[0];
-  var setFolds = foldsPair[1];
+  // 参数搜索框（方案 D）：输入后按每行的 data-gs-label 过滤，整组都不匹配就整组藏起来。
+  var paramPair = React.useState("");
+  var paramQuery = paramPair[0];
+  var setParamQuery = paramPair[1];
   var emojiPair = React.useState(false);
   var emojiOpen = emojiPair[0];
   var setEmojiOpen = emojiPair[1];
@@ -1807,40 +1800,45 @@ function Editor() {
   }
 
   /**
-   * 展开/收起一个分区（状态记在浏览器本地）。
+   * 跳到某个分区：直接滚过去（分区不再折叠，所以没有"先展开"这一步）。
+   * 滚动容器是设置抽屉自己，用 scrollIntoView 最省事；吸顶的顶部条已经用 scroll-margin 让开。
    * @param {string} key 分区标识。
    */
-  function toggleFold(key) {
-    var next = Object.assign({}, folds);
-    next[key] = !(folds[key] === true);
-    setFolds(next);
-    writeFoldState(next);
-  }
-
-  /**
-   * 一次性展开/收起所有分区（状态照旧记在浏览器本地）。
-   * @param open - true 全部展开，false 全部收起。
-   */
-  function setAllFolds(open) {
-    var next = Object.assign({}, folds);
-    Object.keys(FOLD_DEFAULTS).forEach(function (key) { next[key] = open === true; });
-    setFolds(next);
-    writeFoldState(next);
-  }
-
-  /**
-   * 跳到某个分区：先把它展开，再滚到视野里（卡片有 scroll-margin-top，不会被吸顶预览挡住）。
-   * @param key - 分区标识。
-   */
   function jumpToSection(key) {
-    var next = Object.assign({}, folds);
-    next[key] = true;
-    setFolds(next);
-    writeFoldState(next);
-    window.setTimeout(function () {
-      var el = document.querySelector('[data-gs-sec="' + key + '"]');
-      if (el !== null && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "start", behavior: "smooth" });
-    }, 60);
+    if (typeof document === "undefined") return;
+    var el = document.querySelector('[data-gs-sec="' + key + '"]');
+    if (el !== null && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  /**
+   * 按搜索词过滤参数行（方案 D）。
+   * 走 DOM 而不是重排 React：每个参数行都带 data-gs-row / data-gs-label，
+   * 只要给它挂上 .gs-row-hide 就行；一组里一行都没命中，整组挂 .gs-sec-hide。
+   * 搜索词为空时全部恢复显示。
+   * @param {string} query 搜索词（空串＝不过滤）。
+   */
+  function applyParamFilter(query) {
+    if (typeof document === "undefined") return;
+    var main = document.querySelector(".gs-dmain");
+    if (main === null) return;
+    var q = String(query === undefined || query === null ? "" : query).trim().toLowerCase();
+    var groups = main.querySelectorAll(".gs-dsec");
+    for (var i = 0; i < groups.length; i += 1) {
+      var group = groups[i];
+      var title = String(group.getAttribute("data-gs-filter") || "").toLowerCase();
+      var rows = group.querySelectorAll("[data-gs-row]");
+      var any = false;
+      for (var r = 0; r < rows.length; r += 1) {
+        var row = rows[r];
+        var label = String(row.getAttribute("data-gs-label") || "").toLowerCase();
+        var hit = q === "" || label.indexOf(q) >= 0 || title.indexOf(q) >= 0;
+        row.classList.toggle("gs-row-hide", !hit);
+        if (hit) any = true;
+      }
+      // 没有任何"参数行"的分组（纯说明文字）：按标题匹配决定去留
+      if (rows.length === 0) any = q === "" || title.indexOf(q) >= 0;
+      group.classList.toggle("gs-sec-hide", q !== "" && !any);
+    }
   }
 
   /**
@@ -1986,15 +1984,15 @@ function Editor() {
   }
 
   /**
-   * 一个可折叠的分区卡片：标题行常驻，内容按需展开。
-   * 高频分区默认展开（文本/字体/外观），低频分区默认收起（行匹配/旧文案/诊断），
-   * 这样面板不再是一条需要来回滚的长龙。展开状态记在浏览器本地。
+   * 一个参数分组（方案 D：参数表）。标题行 + 下面一行一个参数，**不再折叠**。
+   * 找参数靠右栏顶部的搜索框与「跳到分区」下拉（jumpToSection），不靠逐个展开；
+   * 这样左栏的预览可以一直盯着，不用"滚下去改完再滚回来看"。
    *
    * 注意：children 是**可变参数**（可以传多个元素）。最后一项如果是个"普通对象"（不是 React 元素），
    * 才当作 options —— 之前只支持一个 children，多传的内容会被静默当成 options 丢掉
    * （2026-09-18 实测发现「外观样式」里的形状/填充/圆角/底色/边框/边色/阴影就是这么整块消失的）。
    * @param {string} title 标题。
-   * @param {string} key 分区标识（同时是折叠状态与 React key）。
+   * @param {string} key 分区标识（同时是 React key、data-gs-sec 与筛选分组）。
    * @param {...*} children 内容（可多个）。
    * @returns {Object} React 元素。
    */
@@ -2003,25 +2001,44 @@ function Editor() {
     var last = rest.length > 0 ? rest[rest.length - 1] : undefined;
     var hasOptions = last !== null && typeof last === "object" && !Array.isArray(last) && React.isValidElement(last) !== true;
     var opts = hasOptions ? rest.pop() : {};
-    var open = folds[key] !== undefined ? folds[key] === true : opts.defaultOpen !== false;
     var children = rest.length === 1 ? rest[0] : rest;
-    return React.createElement("div", { className: "gs-card", key: key, "data-gs-sec": key },
-      React.createElement("div", {
-        className: open ? "gs-fold gs-fold-open" : "gs-fold", role: "button", tabIndex: 0,
-        onClick: function () { toggleFold(key); },
-        onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") toggleFold(key); }
-      },
-        React.createElement("span", { className: "gs-fold-caret" }, open ? "▼" : "▶"),
-        React.createElement("span", { className: "gs-sec-title", style: { marginBottom: 0 } }, title),
-        opts.summary === undefined ? null : React.createElement("span", { className: "gs-fold-sum" }, opts.summary)
+    return React.createElement("section", {
+      className: "gs-dsec",
+      key: key,
+      "data-gs-sec": key,
+      "data-gs-filter": title
+    },
+      React.createElement("h3", { className: "gs-dsec-h" },
+        title,
+        opts.summary === undefined ? null : React.createElement("span", { className: "gs-dsec-sum" }, opts.summary)
       ),
-      open ? React.createElement("div", { className: "gs-fold-body" }, children) : null
+      React.createElement("div", { className: "gs-dsec-b" }, children)
     );
   }
 
-  /** 一格：标签 + 控件（两列网格里用，省纵向空间）。 */
+  /**
+   * 参数表里的一行：左侧固定宽度的参数名，右侧控件。
+   * data-gs-row / data-gs-label 是给顶部搜索框过滤用的（applyParamFilter 只看这两个属性）。
+   * @param {string} label 参数名（空串表示这一行没有名字，占满整行）。
+   * @param {Object|Array} control 控件。
+   * @param {string} key React key。
+   * @returns {Object} React 元素。
+   */
+  function drow(label, control, key) {
+    return React.createElement("div", {
+      className: "gs-drow", key: key, "data-gs-row": "1", "data-gs-label": label
+    },
+      label === "" || label === undefined ? null : React.createElement("span", { className: "gs-label gs-drow-k" }, label),
+      React.createElement("div", { className: "gs-drow-v" }, control)
+    );
+  }
+
+  /** 一格：标签 + 控件（方案 D 的参数表里就是"一行一个参数"）。 */
   function cell(label, control, key, wide) {
-    return React.createElement("div", { className: wide === true ? "gs-cell gs-cell-wide" : "gs-cell", key: key },
+    return React.createElement("div", {
+      className: wide === true ? "gs-cell gs-cell-wide" : "gs-cell",
+      key: key, "data-gs-row": "1", "data-gs-label": label
+    },
       React.createElement("span", { className: "gs-label" }, label),
       control
     );
@@ -2040,7 +2057,10 @@ function Editor() {
    */
   function masterSwitch(key, icon, title, onHint, offHint) {
     var on = switchOn(draft, key);
-    return React.createElement("div", { className: on ? "gs-master-item" : "gs-master-item gs-master-off", key: key },
+    return React.createElement("div", {
+      className: on ? "gs-master-item" : "gs-master-item gs-master-off",
+      key: key, "data-gs-row": "1", "data-gs-label": title
+    },
       React.createElement("div", { className: "gs-master-head" },
         React.createElement("span", { className: "gs-master-name" }, icon + " " + title),
         React.createElement("label", {
@@ -2059,6 +2079,31 @@ function Editor() {
         )
       ),
       React.createElement("div", { className: "gs-hint" }, on ? onHint : offHint)
+    );
+  }
+
+  /**
+   * 一个独立的小开关（文案池开关 / 工作区绑定开关用）：与「总开关」同一套样式。
+   * 当前状态用颜色与滑块位置表达（轨道填色 + 开/关），不用打勾的方框。
+   * @param {boolean} checked 是否打开。
+   * @param {Function} onChange 变更回调（收到布尔值）。
+   * @param {string} title 无障碍标题与悬停提示。
+   * @returns {Object} React 元素。
+   */
+  function switchBox(checked, onChange, title) {
+    var on = checked === true;
+    return React.createElement("label", {
+      className: dark === true ? "gs-switch gs-switch-dark" : "gs-switch", title: title
+    },
+      React.createElement("input", {
+        type: "checkbox", role: "switch",
+        checked: on, "aria-checked": on ? "true" : "false", "aria-label": title,
+        onChange: function (event) { onChange(event.target.checked); }
+      }),
+      React.createElement("span", { className: "gs-switch-track" },
+        React.createElement("span", { className: "gs-switch-thumb" })
+      ),
+      React.createElement("span", { className: "gs-switch-state" }, on ? "开" : "关")
     );
   }
 
@@ -2310,49 +2355,24 @@ function Editor() {
   var body = [
     // 顶部：标签页 + 状态 + 实时预览，一起吸顶。这样往下调参数时预览始终可见，
     // 不用"滚下去改完再滚回来看"。
-    React.createElement("div", { className: "gs-stickyhead", key: "head" },
-      React.createElement("div", { className: "gs-tabs", key: "tabs" },
+    React.createElement("div", { className: "gs-dtop", key: "head", "data-gs-part": "top" },
+      React.createElement("div", { className: "gs-dseg", key: "tabs" },
         React.createElement("button", {
-          type: "button", className: tab === "greeting" ? "gs-tab gs-tab-on" : "gs-tab",
+          type: "button", className: tab === "greeting" ? "gs-dseg-on" : "",
           onClick: function () { setTab("greeting"); }
         }, "开场语"),
         React.createElement("button", {
-          type: "button", className: tab === "signOff" ? "gs-tab gs-tab-on" : "gs-tab",
+          type: "button", className: tab === "signOff" ? "gs-dseg-on" : "",
           onClick: function () { setTab("signOff"); }
         }, "结束语"),
         React.createElement("span", { className: "gs-saved" },
           busy ? "正在保存…" : saved ? "已保存 · 下一次回复即生效" : touched ? "有未保存的改动" : "")
       ),
-      React.createElement("div", { className: "gs-quicknav", key: "quicknav" },
-        SECTION_NAV.map(function (item) {
-          return React.createElement("button", {
-            key: item.key, type: "button", className: "gs-chip",
-            title: "跳到「" + item.label + "」并展开",
-            onClick: function () { jumpToSection(item.key); }
-          }, item.label);
-        }),
-        React.createElement("span", { className: "gs-quicknav-gap" }),
-        React.createElement("button", {
-          type: "button", className: "gs-chip", title: "展开全部分区",
-          onClick: function () { setAllFolds(true); }
-        }, "全部展开"),
-        React.createElement("button", {
-          type: "button", className: "gs-chip", title: "收起全部分区",
-          onClick: function () { setAllFolds(false); }
-        }, "全部收起")
-      ),
-      React.createElement("div", { className: "gs-preview", key: "preview" },
-        React.createElement("div", { className: "gs-label" }, "实时预览（两行都显示，正在编辑的那行高亮）"),
-        React.createElement("div", { className: tab === "greeting" ? "gs-preview-line gs-preview-on" : "gs-preview-line" },
-          lineRender(draft.greeting, "开场", "preview-greeting")),
-        React.createElement("div", { className: tab === "signOff" ? "gs-preview-line gs-preview-on" : "gs-preview-line" },
-          lineRender(draft.signOff, "收尾", "preview-signoff")),
-        // 总开关关掉的行在这儿直说一句：预览照旧显示样式，但它已经不会写进提示词了。
-        (switchOn(draft, "greeting") && switchOn(draft, "signOff")) ? null
-          : React.createElement("div", { className: "gs-hint", key: "switches-off" },
-              "总开关：" + (switchOn(draft, "greeting") ? "" : "开场语已关 · ") + (switchOn(draft, "signOff") ? "" : "收尾语已关 · ")
-              + "关掉的行不写进提示词（文案与样式都留着，随时能开回来）")
-      )
+      React.createElement("button", {
+        type: "button", className: "gs-btn gs-btn-on",
+        title: "立刻把当前设置写进配置文件（平时也会自动保存）",
+        onClick: function () { commit(draft); }
+      }, busy ? "正在保存…" : "保存")
     ),
     // 总开关（v1.23.0）：开场语 / 收尾语各一个开关，互不影响。放最顶上，进设置页第一眼就能拨。
     section("总开关（开场语 / 收尾语各管各的 · 拨完自动保存）", "master",
@@ -2368,7 +2388,10 @@ function Editor() {
         "两个开关各存各的：可以只关开场语、只关收尾、或两个全关；开关改的是「提示词里要不要这一行」，所以是**下一次回复**生效。")
     ),
     section("文本（会写进我回复的正文，可含表情）", "text",
-      React.createElement("div", null,
+      React.createElement("div", {
+        key: "text-rows", "data-gs-row": "1",
+        "data-gs-label": "固定文案 正文 文案池 轮换 每轮换一句 表情 emoji 动态变量 复制"
+      },
         React.createElement("textarea", {
           className: "gs-textarea", value: line.text,
           onChange: function (event) { setLine({ text: event.target.value }); }
@@ -2487,11 +2510,8 @@ function Editor() {
         // 文案池：让这一行"每轮换一句"。
         React.createElement("div", { className: "gs-pool", key: "pool" },
           React.createElement("div", { className: "gs-inline gs-pool-head" },
-            React.createElement("label", { className: "gs-inline" },
-              React.createElement("input", {
-                type: "checkbox", checked: poolCfg.enabled === true,
-                onChange: function (event) { patchPool({ enabled: event.target.checked }); }
-              }),
+            React.createElement("span", { className: "gs-inline" },
+              switchBox(poolCfg.enabled === true, function (on) { patchPool({ enabled: on }); }, "文案池开关（两行共用）"),
               React.createElement("span", { className: "gs-label" }, "文案池：让" + (poolKind === "signOff" ? "收尾" : "开场") + "每轮换一句")
             ),
             React.createElement("span", { className: "gs-inline" },
@@ -2633,7 +2653,9 @@ function Editor() {
     ),
     section("外观样式（形状 / 填充 / 边框 / 阴影，只影响页面显示）", "deco",
       // 一键外观改成"小样卡网格"：每张卡直接把当前文案按该预设渲染出来，挑起来不用靠名字猜。
-      React.createElement("div", { className: "gs-preset-grid", key: "presets" },
+      React.createElement("div", {
+        className: "gs-preset-grid", key: "presets", "data-gs-row": "1", "data-gs-label": "外观预设 一键外观 小样"
+      },
         STYLE_PRESETS.map(function (preset) {
           var style = Object.assign({}, PRESET_BASE, preset.style);
           var previewLine = Object.assign({}, line, style, { image: "", animation: "none" });
@@ -2764,11 +2786,8 @@ function Editor() {
         // 按工作区自动换文案：与场景同属"什么时候用哪套文案"，所以放在同一个分区里。
         React.createElement("div", { className: "gs-pool" },
           React.createElement("div", { className: "gs-inline gs-pool-head" },
-            React.createElement("label", { className: "gs-inline" },
-              React.createElement("input", {
-                type: "checkbox", checked: wsCfg.enabled === true,
-                onChange: function (event) { patchWs({ enabled: event.target.checked }); }
-              }),
+            React.createElement("span", { className: "gs-inline" },
+              switchBox(wsCfg.enabled === true, function (on) { patchWs({ enabled: on }); }, "按工作区自动换文案"),
               React.createElement("span", { className: "gs-label" }, "按工作区自动换文案（切到哪个项目就用它的开场/收尾）")
             ),
             React.createElement("span", { className: "gs-hint" }, wsCfg.items.length + " 条")
@@ -2818,7 +2837,6 @@ function Editor() {
         )
       ),
       {
-        defaultOpen: false,
         summary: scenes.items.length === 0
           ? "未设置"
           : (scenes.active === ""
@@ -2839,7 +2857,6 @@ function Editor() {
         ], draft.onlyAssistant, function (value) { patchTop({ onlyAssistant: value === "true" || value === true }); }, "onlyAssistant", true)
       ]),
       {
-        defaultOpen: false,
         summary: matchModeLabel(draft.matchMode)
       }
     ),
@@ -2885,7 +2902,6 @@ function Editor() {
         React.createElement("span", { className: "gs-hint" }, "最多 " + LEGACY_LINES_MAX + " 条；空行会拦住保存，填上或删掉即可")
       ),
       {
-        defaultOpen: false,
         summary: (draft.legacyLines || []).length === 0 ? "未设置" : (draft.legacyLines || []).length + " 条"
       }
     )
@@ -2944,7 +2960,6 @@ function Editor() {
         }, ui.showDiag === true ? "隐藏诊断分区" : "显示诊断分区（排障用）")
       )
     ]), {
-      defaultOpen: false,
       summary: costInfo === null || costInfo === undefined
         ? "读不到台账"
         : "今日 ≈" + formatCny(costInfo.today !== null && costInfo.today !== undefined ? costInfo.today.costCNY : 0)
@@ -2979,13 +2994,12 @@ function Editor() {
         }))
       )
     ),
-    { defaultOpen: false, summary: "v" + CLIENT_VERSION }
+    { summary: "v" + CLIENT_VERSION }
   ));
-  body.push(React.createElement("div", { className: "gs-actions", key: "actions" },
-    React.createElement("button", {
-      type: "button", className: "gs-btn gs-btn-on",
-      onClick: function () { commit(draft); }
-    }, busy ? "正在保存…" : "保存并生效"),
+  body.push(React.createElement("div", {
+    className: "gs-dfoot", key: "actions", "data-gs-part": "foot"
+  },
+    React.createElement("span", { className: "gs-hint" }, "上面这些是长尾操作；日常改参数会自动保存："),
     React.createElement("button", {
       type: "button", className: "gs-btn",
       disabled: revertConfig === null,
@@ -3018,7 +3032,86 @@ function Editor() {
     React.createElement("span", { className: "gs-hint" }, "改动也会自动保存")
   ));
 
-  return React.createElement("div", { className: "gs-panel" }, body);
+  // ── 布局组装（v1.24.0）：把 body 里的元素按角色摆进两栏 ─────────────────
+  // body 里的元素按角色分开：顶部工具条 / 左栏总开关 / 右栏参数分组 / 其它提示 / 页脚。
+  var topEl = null;
+  var footEl = null;
+  var sideSecs = [];
+  var mainSecs = [];
+  var noteEls = [];
+  body.forEach(function (el) {
+    var props = el !== null && typeof el === "object" ? el.props : undefined;
+    var part = props === undefined || props === null ? undefined : props["data-gs-part"];
+    var sec = props === undefined || props === null ? undefined : props["data-gs-sec"];
+    if (part === "top") { topEl = el; return; }
+    if (part === "foot") { footEl = el; return; }
+    if (sec === "master") { sideSecs.push(el); return; }
+    if (sec !== undefined) { mainSecs.push(el); return; }
+    noteEls.push(el);
+  });
+
+  // 左栏：两行都按真实样式渲染，点哪一行就切到哪一行编辑。
+  var previewCard = React.createElement("div", { className: "gs-dpvcard", key: "preview" },
+    React.createElement("div", { className: "gs-label" }, "我的回复 · 预览（点一行即切过去改这一行）"),
+    [["greeting", "开场", draft.greeting], ["signOff", "收尾", draft.signOff]].map(function (pair) {
+      return React.createElement("div", {
+        className: tab === pair[0] ? "gs-dpvrow gs-dpv-on" : "gs-dpvrow",
+        key: pair[0], role: "button", tabIndex: 0,
+        title: "切到「" + pair[1] + "」这一行",
+        onClick: function () { setTab(pair[0]); },
+        onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") setTab(pair[0]); }
+      },
+        React.createElement("span", { className: "gs-dpvtag" }, pair[1]),
+        React.createElement("span", { className: "gs-dpvline" }, lineRender(pair[2], "", "preview-" + pair[0]))
+      );
+    }),
+    // 总开关关掉的行在这儿直说一句：预览照旧显示样式，但它已经不会写进提示词了。
+    (switchOn(draft, "greeting") && switchOn(draft, "signOff")) ? null
+      : React.createElement("div", { className: "gs-hint", key: "switches-off" },
+          "总开关：" + (switchOn(draft, "greeting") ? "" : "开场语已关 · ") + (switchOn(draft, "signOff") ? "" : "收尾语已关 · ")
+          + "关掉的行不写进提示词（文案与样式都留着，随时能开回来）")
+  );
+
+  // 右栏顶部：参数搜索框 + 跳到分区（替代原来那排同款药丸）。
+  var filterRow = React.createElement("div", { className: "gs-dfilter", key: "filter" },
+    React.createElement("input", {
+      className: "gs-input", style: { flex: "1 1 auto", minWidth: 150 }, value: paramQuery,
+      placeholder: "筛参数：字号 / 颜色 / 动效 / 文案池 / 场景…",
+      title: "只留下参数名里含这个词的行；清空就全部显示",
+      onChange: function (event) { setParamQuery(event.target.value); }
+    }),
+    React.createElement("select", {
+      className: "gs-input gs-select", style: { width: 132, flex: "none" }, value: "", title: "跳到某个分组",
+      onChange: function (event) { if (event.target.value.length > 0) jumpToSection(event.target.value); }
+    },
+      [React.createElement("option", { key: "none", value: "" }, "跳到分区…")].concat(
+        SECTION_NAV.map(function (item) {
+          return React.createElement("option", { key: item.key, value: item.key }, item.label);
+        })
+      )
+    ),
+    React.createElement("span", { className: "gs-hint" }, paramQuery.trim().length > 0 ? "已按关键词过滤" : "")
+  );
+
+  // 每次渲染后都按当前关键词重新过滤一遍：React 重建节点后类名会掉，不能只在改关键词时跑。
+  React.useEffect(function () { applyParamFilter(paramQuery); });
+
+  return React.createElement("div", { className: "gs-panel gs-d" }, [
+    topEl,
+    noteEls.length > 0 ? React.createElement("div", { className: "gs-dnotes", key: "notes" }, noteEls) : null,
+    React.createElement("div", { className: "gs-dwrap", key: "wrap" },
+      React.createElement("div", { className: "gs-dgrid" }, [
+        React.createElement("aside", { className: "gs-dside", key: "side" }, [
+          previewCard,
+          sideSecs.length > 0
+            ? React.createElement("div", { className: "gs-dsec", key: "master-block", "data-gs-sec": "master" }, sideSecs)
+            : null
+        ]),
+        React.createElement("div", { className: "gs-dmain", key: "main" }, [filterRow].concat(mainSecs))
+      ])
+    ),
+    footEl
+  ]);
 }
 
 function formatTokens(value) {
@@ -3942,7 +4035,7 @@ function installChatStyler(ctx) {
   /** 该节点是否位于"不该被当成正文固定行"的区域（思考面板、本插件自己的面板/预览/提示）。 */
   function isFixedLineExcluded(node) {
     if (node.closest === undefined) return false;
-    return node.closest('[class*="reasoning"], [class*="Reasoning"], [class*="thinking"], [class*="Thinking"], .gs-panel, .gs-preview, .gs-tip') !== null;
+    return node.closest('[class*="reasoning"], [class*="Reasoning"], [class*="thinking"], [class*="Thinking"], .gs-panel, .gs-tip') !== null;
   }
 
   /**

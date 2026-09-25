@@ -100,7 +100,9 @@ function checkPatch() {
  * v1.20.0：380KB → 400KB。这一版只加了"宿主节奏 × 本页采样"的合成逻辑与来源文案
  * （pickPace / paceSourceText / rateFromJumps 重写），实测 370.9KB。
  * v1.22.0：维持 400KB 阈值（实测 380.5KB）。这一版只加了三个总开关的 UI 与门组件
- * （苹果滑动开关 CSS + masterSwitch + GreetDockGate），没有新增长尾表。 */
+ * （苹果滑动开关 CSS + masterSwitch + GreetDockGate），没有新增长尾表。
+ * v1.24.0：维持 400KB 阈值（实测 230.6KB）。这一版把设置页换成「预览为主 + 参数表」两栏布局
+ * （client.js 曾一度涨到 234KB），同时清掉了折叠卡片时代的死 CSS，净增有限。 */
 function reportSizes() {
   for (const file of ['client.js', 'index.mjs']) {
     const size = statSync(join(ROOT, file)).size

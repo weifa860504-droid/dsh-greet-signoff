@@ -35,7 +35,7 @@ export const inject = ['systemPrompt', 'webServer']
 const API_PATH = '/api/greet-signoff'
 /** 宿主半版本号：与 package.json、浏览器半的 CLIENT_VERSION 保持一致。
  *  它挂在启动日志里，用来核对"服务到底加载的是哪份代码"（热重载后也能看出来）。 */
-const HOST_VERSION = '1.23.0'
+const HOST_VERSION = '1.24.0'
 const SECTION_NAME = 'greet-signoff:rule'
 const SECTION_ORDER = 100
 const TEXT_LIMIT = 200
@@ -75,7 +75,7 @@ const WEIGHTS = [400, 500, 600, 700, 800]
 const MATCH_MODES = ['exact', 'loose', 'fuzzy']
 
 /** 文案池：最多几句、每句多长、两种挑法。 */
-const POOL_MAX = 20
+const POOL_MAX = 50 // v1.24.0：20 → 50（必须与浏览器半 client.js 的 POOL_MAX 同值；超出的句子会被静默截断）
 const POOL_LINE_MAX = 200
 const POOL_MODES = ['random', 'sequence']
 /** 颜色字段只允许 #rgb / #rrggbb / #rrggbbaa，避免任意字符串进样式。 */
@@ -672,6 +672,12 @@ function resolveTemplate(text, now) {
 const poolTicks = { greeting: 0, signOff: 0 }
 
 /**
+ * 上一次真正发出去的那一句。随机档靠它避开"连续两轮同一句"——
+ * 纯粹随机时会有 1/N 的概率连着出现两次，用户看到的就是"文案池像没生效"。
+ */
+const lastPoolPick = { greeting: '', signOff: '' }
+
+/**
  * 本轮某一行的文案：文案池启用且这一行有内容时，从池子里挑一句；否则用固定文案。
  * 池子里的句子和固定文案走同一套动态变量解析，所以模型与页面看到的是同一句。
  * @param {object} config 已归一化的配置。
@@ -695,9 +701,16 @@ function pickLine(config, kind, now, stats, binding) {
   if (pool.mode === 'sequence') {
     const index = poolTicks[kind] % list.length
     poolTicks[kind] = index + 1
+    lastPoolPick[kind] = list[index]
     return list[index]
   }
-  return list[Math.floor(Math.random() * list.length)]
+  const picked = list[Math.floor(Math.random() * list.length)]
+  // 随机档也保证"每轮不一样"：抽到与上一次完全相同的那一句时顺延一句（池子只有一句时不折腾）。
+  const chosen = list.length > 1 && picked === lastPoolPick[kind]
+    ? list[(list.indexOf(picked) + 1) % list.length]
+    : picked
+  lastPoolPick[kind] = chosen
+  return chosen
 }
 
 /* ─── 本轮信息变量：{model} / {count} / {elapsed} / {tokens} ─────────────── */

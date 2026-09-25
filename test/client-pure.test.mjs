@@ -230,9 +230,10 @@ test('sanitizePool / sanitizePoolList：文案池清洗', () => {
   // 超长截断到 200
   const long = 'x'.repeat(260)
   assert.equal(t.sanitizePoolList([long])[0].length, 200)
-  // 最多 20 句
-  const many = Array.from({ length: 30 }, (_, i) => '第' + i + '句')
-  assert.equal(t.sanitizePoolList(many).length, 20)
+  // 最多 50 句（v1.24.0：20 → 50，与宿主半 index.mjs 的 POOL_MAX 同值）
+  const many = Array.from({ length: 80 }, (_, i) => '第' + i + '句')
+  assert.equal(t.sanitizePoolList(many).length, 50)
+  assert.equal(t.sanitizePoolList(many.slice(0, 50)).length, 50, '正好 50 句不该被截断')
   // 整体字段：未知模式回落 random，enabled 只认 true
   const pool = t.sanitizePool({ enabled: 'yes', mode: 'weird', greeting: ['甲'], signOff: [] })
   assert.equal(pool.enabled, false)
@@ -572,4 +573,32 @@ test('v1.23.0 源码契约：两个总开关 + 苹果滑动开关 + 上下文卡
   assert.ok(!SOURCE.includes('gs-mode-'), '不该再有预算档菜单的 CSS')
   assert.ok(!SOURCE.includes('gs-dock'), '不该再有进度条时代的类名')
   assert.ok(/SECTION_NAV = \[\s*\{ key: "master"/.test(SOURCE), '跳转条里「总开关」应在第一个')
+})
+
+test('v1.24.0 源码契约：参数表两栏布局 + 折叠时代死零件清干净 + 池子 50 句', () => {
+  // 文案池上限与宿主半同值（两边不同值时，设置页会静默截断）
+  assert.ok(SOURCE.includes('var POOL_MAX = 50;'), '浏览器半文案池上限应为 50')
+
+  // 两栏布局的零件都在：顶部工具条 / 段控 / 两栏网格 / 左栏预览卡 / 右栏参数表 / 页脚
+  for (const token of [
+    '"gs-panel gs-d"', 'gs-dtop', 'gs-dseg', 'gs-dwrap', 'gs-dgrid', 'gs-dside', 'gs-dmain',
+    'gs-dfilter', 'gs-dsec', 'gs-drow', 'gs-dfoot', 'gs-dpvcard', 'gs-row-hide', 'gs-sec-hide'
+  ]) {
+    assert.ok(SOURCE.includes(token), '缺两栏布局的零件：' + token)
+  }
+  // 找参数靠搜索框 + 「跳到分区」下拉（SECTION_NAV 是下拉的数据源），不靠逐张展开
+  assert.ok(SOURCE.includes('applyParamFilter'), '缺参数搜索过滤')
+  assert.ok(SOURCE.includes('"data-gs-row"'), '缺给搜索用的行标记 data-gs-row')
+  assert.ok(SOURCE.includes('jumpToSection'), '缺「跳到分区」')
+  // 设置抽屉只是窗口里的一小块：响应式必须用容器查询，不能只看视口宽度
+  assert.ok(SOURCE.includes('@container (max-width:460px)'), '缺容器查询响应式')
+  assert.ok(SOURCE.includes('@supports not (container-type: inline-size)'), '缺老浏览器兜底')
+
+  // 折叠卡片那一套（JS + 死 CSS）必须彻底清干净
+  for (const gone of [
+    'FOLD_DEFAULTS', 'readFoldState', 'writeFoldState', 'setAllFolds', 'defaultOpen',
+    'gs-card', 'gs-chip', 'gs-fold', 'gs-stickyhead', 'gs-quicknav', 'gs-actions', 'gs-scheme', 'gs-mark'
+  ]) {
+    assert.ok(!SOURCE.includes(gone), '不该再出现：' + gone)
+  }
 })

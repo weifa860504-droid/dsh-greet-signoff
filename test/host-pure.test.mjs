@@ -67,6 +67,45 @@ test('宿主半：pickLine —— 固定文案 / 文案池 / 运行时变量', (
   assert.equal(h.pickLine(off, 'signOff', NOW, STATS), '以上，本轮 12.4s')
 })
 
+test('v1.24.0 宿主半：随机档不连着两轮挑到同一句', () => {
+  const two = {
+    greeting: { text: '固定开场' },
+    signOff: { text: '固定收尾' },
+    pool: { enabled: true, mode: 'random', greeting: ['甲', '乙'], signOff: [] },
+  }
+  let prev = h.pickLine(two, 'greeting', NOW, STATS)
+  assert.ok(prev === '甲' || prev === '乙')
+  for (let i = 0; i < 40; i += 1) {
+    const next = h.pickLine(two, 'greeting', NOW, STATS)
+    assert.notEqual(next, prev, '连着两轮不该是同一句（纯随机会有 1/N 的概率撞上）')
+    assert.ok(next === '甲' || next === '乙')
+    prev = next
+  }
+
+  // 池子只有一句：不折腾，照旧每次都给它
+  const single = { ...two, pool: { enabled: true, mode: 'random', greeting: ['唯一'], signOff: [] } }
+  assert.equal(h.pickLine(single, 'greeting', NOW, STATS), '唯一')
+  assert.equal(h.pickLine(single, 'greeting', NOW, STATS), '唯一')
+
+  // sequence 档行为不变（两句话的池子：连着两次必然不同）
+  const seq = { ...two, pool: { enabled: true, mode: 'sequence', greeting: ['甲', '乙'], signOff: [] } }
+  const first = h.pickLine(seq, 'greeting', NOW, STATS)
+  const second = h.pickLine(seq, 'greeting', NOW, STATS)
+  assert.ok(first === '甲' || first === '乙')
+  assert.notEqual(second, first)
+
+  // 两行的"上一次"各记各的，互不影响
+  const both = {
+    greeting: { text: '固定开场' },
+    signOff: { text: '固定收尾' },
+    pool: { enabled: true, mode: 'random', greeting: ['甲', '乙'], signOff: ['丙', '丁'] },
+  }
+  const g1 = h.pickLine(both, 'greeting', NOW, STATS)
+  const s1 = h.pickLine(both, 'signOff', NOW, STATS)
+  assert.ok(['甲', '乙'].includes(g1) && ['丙', '丁'].includes(s1))
+  assert.notEqual(h.pickLine(both, 'signOff', NOW, STATS), s1)
+})
+
 test('宿主半：ruleTextWith 把解析后的文案写进提示段', () => {
   const config = h.normalize({ greeting: { text: '你好 {count}' }, signOff: { text: '以上' } })
   const text = h.ruleTextWith(config, { rounds: 0, lastMs: 0, lastTokens: 0, lastModel: '', lastAt: 0 })
